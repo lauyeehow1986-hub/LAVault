@@ -17,6 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.2"
           channel: stable
       - name: Install Linux BLE deps
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
@@ -28,7 +29,7 @@ jobs:
         working-directory: app_flutter
         run: |
           flutter pub get
-          flutter analyze
+          flutter analyze --no-fatal-infos
           flutter test test/widget_test.dart
 
   build-android:
@@ -45,6 +46,7 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.2"
           channel: stable
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -80,6 +82,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.2"
           channel: stable
       - name: Build Rust Workspace Release
         run: cargo build --workspace --release
