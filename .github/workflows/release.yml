@@ -1,0 +1,135 @@
+name: Build & Release LaVault
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install Linux BLE deps
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: MCP Self-Test
+        run: python3 mcp/mcp_vault_dev_server.py --self-test
+      - name: Rust Workspace Tests
+        run: cargo test --workspace
+      - name: Flutter Analyze & Widget Tests
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test test/widget_test.dart
+
+  build-android:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Locate Android NDK
+        run: |
+          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+      - name: Compile vault_core for Android ABIs
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -o app_flutter/android/app/src/main/jniLibs \
+            build --release -p vault_core
+      - name: Build Android Release APK
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter build apk --release
+      - name: Stage APK artifact
+        run: cp app_flutter/build/app/outputs/flutter-apk/app-release.apk lavault-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lavault-android
+          path: lavault-android.apk
+
+  build-windows:
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Build Rust Workspace Release
+        run: cargo build --workspace --release
+      - name: Build Flutter Windows Release
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter build windows --release
+      - name: Package Windows Zip
+        shell: pwsh
+        run: |
+          mkdir dist-win
+          Copy-Item -Recurse app_flutter/build/windows/x64/runner/Release/* dist-win/
+          Copy-Item target/release/lavault.exe dist-win/
+          Compress-Archive -Path dist-win/* -DestinationPath lavault-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lavault-windows
+          path: lavault-windows-x64.zip
+
+  build-linux-cli:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux BLE deps
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Build Linux CLI
+        run: |
+          cargo build -p desktop_daemon --release
+          tar -czf lavault-cli-linux-x64.tar.gz -C target/release lavault
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lavault-linux
+          path: lavault-cli-linux-x64.tar.gz
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-android, build-windows, build-linux-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/lavault-android/lavault-android.apk
+            artifacts/lavault-windows/lavault-windows-x64.zip
+            artifacts/lavault-linux/lavault-cli-linux-x64.tar.gz

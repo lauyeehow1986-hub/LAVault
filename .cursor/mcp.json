@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-auth-vault-mcp": {
+      "command": "python3",
+      "args": ["mcp/mcp_vault_dev_server.py"]
+    }
+  }
+}
