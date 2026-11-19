@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:app_flutter/main.dart';
@@ -227,5 +228,68 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('unlock_vault_btn')), findsOneWidget);
     controller.dispose();
+  });
+
+  group('resolveVaultDbPath', () {
+    test('prefers native Android directory even when supportDirProvider throws', () async {
+      final tmp = Directory.systemTemp.createTempSync('lavault_android_native_');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+
+      final resolved = await resolveVaultDbPath(
+        isAndroidOverride: true,
+        nativeAndroidDirProvider: () async => tmp.path,
+        supportDirProvider: () async => throw Exception('MissingPluginException'),
+        docsDirProvider: () async => throw Exception('MissingPluginException'),
+        tempDirProvider: () async => throw Exception('MissingPluginException'),
+      );
+
+      expect(resolved, '${tmp.path}/lavault_mobile.db');
+    });
+
+    test('falls back to docsDirProvider then tempDirProvider when native/support fail', () async {
+      final docsDir = Directory.systemTemp.createTempSync('lavault_docs_');
+      final tempDir = Directory.systemTemp.createTempSync('lavault_temp_');
+      addTearDown(() {
+        docsDir.deleteSync(recursive: true);
+        tempDir.deleteSync(recursive: true);
+      });
+
+      final fromDocs = await resolveVaultDbPath(
+        isAndroidOverride: true,
+        nativeAndroidDirProvider: () async => null,
+        supportDirProvider: () async => throw Exception('jni error'),
+        docsDirProvider: () async => docsDir,
+        tempDirProvider: () async => tempDir,
+      );
+      expect(fromDocs, '${docsDir.path}/lavault_mobile.db');
+
+      final fromTemp = await resolveVaultDbPath(
+        isAndroidOverride: true,
+        nativeAndroidDirProvider: () async => null,
+        supportDirProvider: () async => throw Exception('jni error'),
+        docsDirProvider: () async => throw Exception('docs error'),
+        tempDirProvider: () async => tempDir,
+      );
+      expect(fromTemp, '${tempDir.path}/lavault_mobile.db');
+    });
+
+    test('throws StateError when all Android directory providers fail', () async {
+      await expectLater(
+        resolveVaultDbPath(
+          isAndroidOverride: true,
+          nativeAndroidDirProvider: () async => null,
+          supportDirProvider: () async => throw Exception('support fail'),
+          docsDirProvider: () async => throw Exception('docs fail'),
+          tempDirProvider: () async => throw Exception('temp fail'),
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('Unable to resolve writable Android storage directory'),
+          ),
+        ),
+      );
+    });
   });
 }

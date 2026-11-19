@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -9,6 +10,94 @@ import '../src/rust/api.dart' as rust_api;
 import '../src/rust/frb_generated.dart';
 import '../src/rust/otp.dart';
 import 'hardware_keystore_service.dart';
+
+const MethodChannel _lavaultPathsChannel = MethodChannel(
+  'com.lavault.app_flutter/paths',
+);
+
+/// Resolves a writable SQLite vault file path across Android, iOS, and Desktop.
+///
+/// On Android, prefers a native `MethodChannel` lookup (`Context.filesDir`) before
+/// falling back across `path_provider` directories, ensuring parent directories exist
+/// and throwing a diagnostic [StateError] rather than returning a relative filename.
+Future<String> resolveVaultDbPath({
+  String? dbPathOverride,
+  bool? isAndroidOverride,
+  Future<String?> Function()? nativeAndroidDirProvider,
+  Future<Directory> Function()? supportDirProvider,
+  Future<Directory> Function()? docsDirProvider,
+  Future<Directory> Function()? tempDirProvider,
+}) async {
+  if (dbPathOverride != null && dbPathOverride.trim().isNotEmpty) {
+    return dbPathOverride;
+  }
+
+  final isAndroid = isAndroidOverride ?? (!kIsWeb && Platform.isAndroid);
+  final errors = <String>[];
+
+  Future<String?> tryDir(
+    String label,
+    Future<String?> Function() getter,
+  ) async {
+    try {
+      final rawPath = await getter();
+      final dirPath = rawPath?.trim();
+      if (dirPath == null || dirPath.isEmpty) {
+        errors.add('$label: returned empty path');
+        return null;
+      }
+      await Directory(dirPath).create(recursive: true);
+      final normalized = dirPath.endsWith('/') || dirPath.endsWith('\\')
+          ? dirPath.substring(0, dirPath.length - 1)
+          : dirPath;
+      return '$normalized/lavault_mobile.db';
+    } catch (e) {
+      errors.add('$label: $e');
+      return null;
+    }
+  }
+
+  if (isAndroid) {
+    final nativePath = await tryDir(
+      'nativeAndroid',
+      nativeAndroidDirProvider ??
+          () => _lavaultPathsChannel.invokeMethod<String>('getAppSupportDir'),
+    );
+    if (nativePath != null) return nativePath;
+  }
+
+  final supportPath = await tryDir(
+    'appSupport',
+    () async => (await (supportDirProvider ?? getApplicationSupportDirectory)()).path,
+  );
+  if (supportPath != null) return supportPath;
+
+  final docsPath = await tryDir(
+    'appDocs',
+    () async => (await (docsDirProvider ?? getApplicationDocumentsDirectory)()).path,
+  );
+  if (docsPath != null) return docsPath;
+
+  final tempPath = await tryDir(
+    'tempDir',
+    () async => (await (tempDirProvider ?? getTemporaryDirectory)()).path,
+  );
+  if (tempPath != null) return tempPath;
+
+  if (isAndroid) {
+    throw StateError(
+      'Unable to resolve writable Android storage directory (${errors.join('; ')})',
+    );
+  }
+
+  try {
+    final sysTemp = Directory.systemTemp;
+    await sysTemp.create(recursive: true);
+    return '${sysTemp.path}/lavault_mobile.db';
+  } catch (_) {
+    return 'lavault_mobile.db';
+  }
+}
 
 class PendingUnlockRequest {
   final String id;
@@ -276,13 +365,7 @@ class VaultController extends ChangeNotifier {
 
       await api.ensureInitialized();
       final hwSecret = await keystore.getOrCreateHardwareSecret();
-      String dbPath = dbPathOverride ?? 'lavault_mobile.db';
-      if (dbPathOverride == null) {
-        try {
-          final dir = await getApplicationSupportDirectory();
-          dbPath = '${dir.path}/lavault_mobile.db';
-        } catch (_) {}
-      }
+      final dbPath = await resolveVaultDbPath(dbPathOverride: dbPathOverride);
 
       session = await api.createOrUnlockVault(
         dbPath: dbPath,

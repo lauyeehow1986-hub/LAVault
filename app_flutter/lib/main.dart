@@ -106,7 +106,11 @@ class _LaVaultAppState extends State<LaVaultApp> {
                           const SizedBox(height: 12),
                           Text(
                             'LaVault',
-                            style: Theme.of(context).textTheme.headlineMedium,
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
                           const SizedBox(height: 6),
                           const Text(

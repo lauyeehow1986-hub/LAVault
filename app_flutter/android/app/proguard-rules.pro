@@ -1,0 +1,4 @@
+-keep class com.lavault.app_flutter.** { *; }
+-keep class com.github.dart_lang.jni.** { *; }
+-keep class com.github.dart_lang.jni_flutter.** { *; }
+-keepattributes Signature,InnerClasses,EnclosingMethod

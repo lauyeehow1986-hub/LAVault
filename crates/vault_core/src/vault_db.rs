@@ -86,6 +86,16 @@ pub struct PasswordTotpVault {
 
 impl PasswordTotpVault {
     pub fn open_or_create(path: &Path, db_key: &KeyEncryptionKey) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    VaultError::Storage(format!(
+                        "failed to create vault directory '{}': {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
         let conn = Connection::open(path)
             .map_err(|e| VaultError::Storage(format!("SQLite open failed: {e}")))?;
         Self::init_with_conn(conn, db_key)

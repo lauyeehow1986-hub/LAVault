@@ -100,3 +100,18 @@ fn create_identity_and_vault_persists_x25519_key_across_reunlocks() {
     assert_eq!(s1.ed25519_public_hex, s2.ed25519_public_hex);
     vault_core::api::lock_session(s2.session_id).unwrap();
 }
+
+#[test]
+fn vault_db_open_or_create_creates_missing_parent_directories() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("nested").join("subdir").join("lavault_mobile.db");
+    assert!(!db_path.parent().unwrap().exists());
+
+    let seed = MasterIdentitySeed::from_bytes([0x55; 32]);
+    let keys = DerivedIdentityKeys::from_seed(&seed).unwrap();
+    let vault = PasswordTotpVault::open_or_create(&db_path, keys.vault_db_key())
+        .expect("open_or_create should create missing parent directories");
+    drop(vault);
+
+    assert!(db_path.exists());
+}
