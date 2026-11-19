@@ -592,6 +592,16 @@ pub fn unwrap_dek_direct(
     Ok(dek)
 }
 
+pub fn decrypt_bytes_with_dek(container: &[u8], dek: &DataEncryptionKey) -> Result<Vec<u8>> {
+    let (header, header_sha256, sig_valid, payload) = parse_vlt_parts(container)?;
+    if !sig_valid {
+        return Err(VaultError::AuthFailed(
+            "header Ed25519 signature verification failed".into(),
+        ));
+    }
+    decrypt_stream_chunks(payload, dek, header.cipher, &header_sha256)
+}
+
 pub fn decrypt_bytes_with_direct_slot(
     container: &[u8],
     recipient_id: &str,

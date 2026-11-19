@@ -466,6 +466,16 @@ impl UnlockResponse {
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct EphemeralResponseSecret(StaticSecret);
 
+impl EphemeralResponseSecret {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(StaticSecret::from(bytes))
+    }
+}
+
 pub fn build_unlock_challenge_for_vlt(
     vlt_container: &[u8],
     slot_id: &str,

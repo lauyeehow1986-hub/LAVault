@@ -191,3 +191,68 @@ fn virtual_drive_manager_mount_and_disconnect_zeroize() {
     assert!(!mgr.is_mounted());
     assert!(mgr.read_virtual_file("secret.txt").is_err());
 }
+
+#[test]
+fn stress_cli_command_runs_benchmark_and_generates_qr_html() {
+    let dir = tempdir().unwrap();
+    let qr_html = dir.path().join("stress_qr.html");
+    execute_cli_command(Cli {
+        command: Commands::Stress {
+            rounds: 15,
+            totp_iterations: 500,
+            totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
+            live_totp_secs: 0,
+            qr_html_out: Some(qr_html.clone()),
+        },
+    })
+    .expect("lavault stress command should succeed");
+
+    let html = std::fs::read_to_string(&qr_html).expect("stress html file created");
+    assert!(html.contains("<svg"), "HTML report should embed scannable SVG QR");
+    assert!(
+        html.contains("JBSWY3DPEHPK3PXP"),
+        "HTML report should display the Base32 TOTP secret"
+    );
+}
+
+#[test]
+fn phone_test_qr_challenge_fulfill_and_decrypt_end_to_end() {
+    let dir = tempdir().unwrap();
+    let phone_keys = make_keys(77);
+    let pc_owner_keys = make_keys(1);
+
+    let phone_x25519_hex = hex::encode(phone_keys.x25519_public_bytes());
+    let phone_ed25519_hex = hex::encode(phone_keys.ed25519_verifying().to_bytes());
+    let qr_html = dir.path().join("phone_test_qr.html");
+    let vlt_out = dir.path().join("phone_test.txt.vlt");
+
+    let session = desktop_daemon::qr::prepare_phone_test_session(
+        &phone_x25519_hex,
+        &phone_ed25519_hex,
+        Some(&pc_owner_keys),
+        b"LaVault phone stress payload #1",
+        &vlt_out,
+        &qr_html,
+    )
+    .expect("prepare phone test session");
+
+    assert!(vlt_out.exists());
+    let html = std::fs::read_to_string(&qr_html).unwrap();
+    assert!(html.contains("<svg"));
+    assert!(html.contains("ur:lavault-req/"));
+    assert!(session.ur_request.starts_with("ur:lavault-req/"));
+
+    let terminal_qr = desktop_daemon::qr::render_terminal_qr(&session.ur_request).unwrap();
+    assert!(terminal_qr.lines().count() > 10);
+
+    // Simulate the phone scanning `ur:lavault-req/...`, unlocking, and displaying `ur:lavault-res/...`
+    let challenge = vault_core::transport::UnlockChallenge::from_bcur(&session.ur_request).unwrap();
+    let response =
+        vault_core::transport::fulfill_unlock_challenge(&challenge, "phone", &phone_keys).unwrap();
+    let ur_response = response.to_bcur().unwrap();
+
+    let decrypted = session
+        .complete_with_ur_response(&ur_response)
+        .expect("complete phone test decryption");
+    assert_eq!(decrypted, b"LaVault phone stress payload #1");
+}

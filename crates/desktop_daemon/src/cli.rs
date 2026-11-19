@@ -1,17 +1,25 @@
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use vault_core::identity::{DerivedIdentityKeys, MasterIdentitySeed};
-use vault_core::transport::{build_unlock_challenge_for_vlt, encode_8word_verifier};
+use vault_core::otp::{totp_from_base32, OtpAlgorithm};
+use vault_core::transport::{
+    build_unlock_challenge_for_vlt, decode_bcur_multipart, encode_8word_verifier,
+    encode_bcur_multipart, fulfill_unlock_challenge, verify_and_extract_unlock_dek,
+    UnlockChallenge,
+};
 use vault_core::vlt::{
-    add_direct_recipient_to_vlt, decrypt_bytes_with_direct_slot, decrypt_bytes_with_quorum_slots,
-    decrypt_directory_from_vlt, encrypt_bytes_to_vlt, encrypt_directory_to_vlt,
-    remove_direct_recipient_from_vlt, DirectWrapMethod, PayloadCipher, VltOptions,
+    add_direct_recipient_to_vlt, decrypt_bytes_with_dek, decrypt_bytes_with_direct_slot,
+    decrypt_bytes_with_quorum_slots, decrypt_directory_from_vlt, encrypt_bytes_to_vlt,
+    encrypt_directory_to_vlt, remove_direct_recipient_from_vlt, DirectWrapMethod, PayloadCipher,
+    VltOptions,
 };
 
 use crate::mount::{MountSessionConfig, VirtualDriveManager};
-use crate::qr::run_qr_challenge_prompt;
+use crate::qr::{prepare_phone_test_session, run_qr_challenge_prompt, save_stress_qr_html};
 
 #[derive(Debug, Parser)]
 #[command(name = "lavault", about = "LaVault Zero-Cloud File & Virtual Volume Unlocker")]
@@ -72,6 +80,36 @@ pub enum Commands {
         pin: String,
         #[arg(long, default_value = "LaVault-Desktop")]
         device_name: String,
+    },
+    /// Run offline + live wall-clock TOTP and .vlt Unlocker stress benchmarks
+    Stress {
+        #[arg(long, default_value_t = 50)]
+        rounds: usize,
+        #[arg(long, default_value_t = 10_000)]
+        totp_iterations: usize,
+        #[arg(long)]
+        totp_secret: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        live_totp_secs: u64,
+        #[arg(long)]
+        qr_html_out: Option<PathBuf>,
+    },
+    /// End-to-end Phone <-> PC Unlocker test generating QR (.html + terminal) and decrypting from phone response
+    PhoneTest {
+        #[arg(long)]
+        phone_x25519: String,
+        #[arg(long)]
+        phone_ed25519: String,
+        #[arg(long, default_value = "LaVault phone stress test secret!")]
+        payload: String,
+        #[arg(long, default_value = ".")]
+        out_dir: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        iterations: usize,
+        #[arg(long)]
+        batch_res: Vec<String>,
+        #[arg(long, default_value_t = false)]
+        no_wait: bool,
     },
 }
 
@@ -274,6 +312,175 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
                 vault_core::transport::MDNS_SERVICE_TYPE,
                 vault_core::transport::MDNS_TCP_PORT
             );
+        }
+        Commands::Stress {
+            rounds,
+            totp_iterations,
+            totp_secret,
+            live_totp_secs,
+            qr_html_out,
+        } => {
+            let secret = totp_secret.unwrap_or_else(|| "JBSWY3DPEHPK3PXP".to_string());
+            let totp_start = Instant::now();
+            let algs = [OtpAlgorithm::Sha1, OtpAlgorithm::Sha256, OtpAlgorithm::Sha512];
+            for i in 0..totp_iterations {
+                let ts = 1_700_000_000u64 + (i as u64) * 30;
+                let _ = totp_from_base32(&secret, ts, 30, 6, algs[i % 3])?;
+            }
+            let (b1, _) = totp_from_base32(&secret, 59, 30, 6, OtpAlgorithm::Sha1)?;
+            let (b2, _) = totp_from_base32(&secret, 60, 30, 6, OtpAlgorithm::Sha1)?;
+            assert_ne!(b1, b2, "boundary rollover check failed");
+            let totp_ms = totp_start.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "[TOTP Stress] {totp_iterations} RFC 6238 generations (SHA1/256/512) passed in {totp_ms:.1} ms ({:.0} ops/s)",
+                (totp_iterations as f64) / (totp_ms / 1000.0).max(0.001)
+            );
+
+            let owner = DerivedIdentityKeys::from_seed(&MasterIdentitySeed::from_bytes([1u8; 32]))?;
+            let phone = DerivedIdentityKeys::from_seed(&MasterIdentitySeed::from_bytes([2u8; 32]))?;
+            let vlt_start = Instant::now();
+            let mut last_ur_req = String::new();
+
+            for r in 0..rounds {
+                let payload = format!("LaVault Stress Payload #{r:04}").into_bytes();
+                let vlt = encrypt_bytes_to_vlt(
+                    &payload,
+                    &owner,
+                    &VltOptions {
+                        cipher: PayloadCipher::ChaCha20Poly1305,
+                        wrap_method: DirectWrapMethod::Aes256Kw,
+                        direct_recipients: vec![("phone".into(), phone.x25519_public_bytes())],
+                        quorum_members: vec![],
+                        quorum_threshold_k: 0,
+                    },
+                )?;
+                let (challenge, ephem) = build_unlock_challenge_for_vlt(&vlt, "phone", "StressPC")?;
+                let ur = challenge.to_bcur()?;
+                last_ur_req = ur.clone();
+
+                let frames = encode_bcur_multipart("lavault-req", &challenge.to_cbor()?, 80)?;
+                let subset: Vec<String> = if frames.len() > 2 {
+                    frames.into_iter().skip(1).collect() // drop frame 0 -> XOR fountain recovery
+                } else {
+                    frames
+                };
+                let (ur_type, recovered_bytes) = decode_bcur_multipart(&subset)?;
+                if ur_type != "lavault-req" {
+                    return Err(anyhow!("unexpected UR type '{ur_type}' in round {r}"));
+                }
+                let parsed = UnlockChallenge::from_cbor(&recovered_bytes)?;
+                let response = fulfill_unlock_challenge(&parsed, "phone", &phone)?;
+                let dek =
+                    verify_and_extract_unlock_dek(&response, &ephem, &phone.ed25519_verifying())?;
+                let decrypted = decrypt_bytes_with_dek(&vlt, &dek)?;
+                if decrypted != payload {
+                    return Err(anyhow!("decrypted payload mismatch on stress round {r}"));
+                }
+            }
+            let vlt_ms = vlt_start.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "[Unlocker Stress] {rounds} full .vlt + bc-ur fountain + QR challenge/decrypt cycles passed in {vlt_ms:.1} ms ({:.1} rounds/s)",
+                (rounds as f64) / (vlt_ms / 1000.0).max(0.001)
+            );
+
+            if let Some(html_path) = qr_html_out {
+                save_stress_qr_html(&secret, &last_ur_req, &html_path)?;
+                println!("Saved QR parity & sample unlocker sheet -> {}", html_path.display());
+            }
+
+            if live_totp_secs > 0 {
+                println!(
+                    "\n=== Live TOTP Parity Mode ({live_totp_secs}s) ==="
+                );
+                println!("Add this exact Base32 Secret in your Phone App -> Vault + TOTP tab (+ button): {secret}");
+                let deadline = Instant::now() + std::time::Duration::from_secs(live_totp_secs);
+                let mut last_tick_sec = 0u64;
+                while Instant::now() < deadline {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if now != last_tick_sec {
+                        last_tick_sec = now;
+                        let (code, rem) = totp_from_base32(&secret, now, 30, 6, OtpAlgorithm::Sha1)?;
+                        println!("[UTC {now}] Code: {code}  |  {rem:02}s remaining");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+        Commands::PhoneTest {
+            phone_x25519,
+            phone_ed25519,
+            payload,
+            out_dir,
+            iterations,
+            batch_res,
+            no_wait,
+        } => {
+            for iter in 1..=iterations {
+                let iter_payload = format!("{payload} [round {iter}/{iterations}]");
+                let vlt_path = out_dir.join(format!("phone_test_{iter}.vlt"));
+                let html_path = out_dir.join(format!("phone_test_{iter}.html"));
+                let session = prepare_phone_test_session(
+                    &phone_x25519,
+                    &phone_ed25519,
+                    None,
+                    iter_payload.as_bytes(),
+                    &vlt_path,
+                    &html_path,
+                )?;
+
+                println!("\n=== Phone Unlocker Test Round {iter}/{iterations} ===");
+                println!("1. Open browser file: {}", session.html_path.display());
+                println!("   (or scan the terminal QR below in Android/iOS Unlocker tab -> Scan PC Unlock QR)");
+                run_qr_challenge_prompt(
+                    &UnlockChallenge::from_bcur(&session.ur_request)?,
+                    &session.verifier_8words,
+                )?;
+
+                if let Some(res) = batch_res.get(iter - 1) {
+                    let started = Instant::now();
+                    let pt = session.complete_with_ur_response(res)?;
+                    println!(
+                        "PASS Round {iter}: Verified Ed25519 signature + unwrapped DEK + decrypted {} bytes in {:.2} ms -> {:?}",
+                        pt.len(),
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        String::from_utf8_lossy(&pt)
+                    );
+                } else if !no_wait {
+                    loop {
+                        print!("\nPaste ur:lavault-res/... from phone (or 'quit' to abort): ");
+                        io::stdout().flush()?;
+                        let mut line = String::new();
+                        if io::stdin().read_line(&mut line)? == 0 {
+                            return Err(anyhow!("EOF reached before receiving phone response"));
+                        }
+                        let trimmed = line.trim();
+                        if trimmed.eq_ignore_ascii_case("quit") {
+                            return Err(anyhow!("Phone test aborted by user"));
+                        }
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let started = Instant::now();
+                        match session.complete_with_ur_response(trimmed) {
+                            Ok(pt) => {
+                                println!(
+                                    "PASS Round {iter}: Verified phone Ed25519 signature + unwrapped DEK + decrypted {} bytes in {:.2} ms!\nPlaintext: {:?}",
+                                    pt.len(),
+                                    started.elapsed().as_secs_f64() * 1000.0,
+                                    String::from_utf8_lossy(&pt)
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                println!("Verification failed ({e}). Try pasting the full ur:lavault-res/... string again.");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(())
