@@ -155,15 +155,14 @@ pub fn create_identity_and_vault(
     master_password: String,
     hardware_secret: Vec<u8>,
 ) -> anyhow::Result<SessionInfoDto> {
-    let seed = MasterIdentitySeed::generate()?;
-    let keys = DerivedIdentityKeys::from_seed(&seed)?;
-
     let mut pw = VaultPassword::new(master_password);
     let pw_key = stretch_master_password(&pw, b"lavault-app-salt-v1")?;
     pw.zeroize();
     let combined_db_key = combine_hardware_and_password_key(&pw_key, &hardware_secret)?;
 
     let vault = PasswordTotpVault::open_or_create(Path::new(&db_path), &combined_db_key)?;
+    let seed = vault.load_or_create_identity_seed()?;
+    let keys = DerivedIdentityKeys::from_seed(&seed)?;
 
     let mut id_bytes = [0u8; 16];
     getrandom::getrandom(&mut id_bytes)
@@ -201,6 +200,7 @@ pub fn recover_identity_from_bip39(
     pw.zeroize();
     let combined_db_key = combine_hardware_and_password_key(&pw_key, &hardware_secret)?;
     let vault = PasswordTotpVault::open_or_create(Path::new(&db_path), &combined_db_key)?;
+    vault.store_identity_seed(&seed)?;
 
     let mut id_bytes = [0u8; 16];
     getrandom::getrandom(&mut id_bytes)

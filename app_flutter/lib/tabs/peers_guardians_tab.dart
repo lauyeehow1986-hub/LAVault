@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../services/vault_backend_service.dart';
@@ -97,7 +98,25 @@ class _PeersGuardiansTabState extends State<PeersGuardiansTab> {
               subtitle: Text('${p.transport}\n${p.x25519Hex}'),
               isThreeLine: true,
               trailing: p.id == 'this_device'
-                  ? const Chip(label: Text('Primary'))
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          key: const Key('copy_this_device_key_btn'),
+                          icon: const Icon(Icons.copy, size: 18),
+                          tooltip: 'Copy X25519 Key',
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: p.x25519Hex));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied this_device X25519 key'),
+                              ),
+                            );
+                          },
+                        ),
+                        const Chip(label: Text('Primary')),
+                      ],
+                    )
                   : IconButton(
                       icon: const Icon(Icons.delete_outline),
                       onPressed: () =>

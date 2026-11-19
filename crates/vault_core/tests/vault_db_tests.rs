@@ -70,3 +70,33 @@ fn vault_db_crud_search_live_totp_and_wrong_key_rejection() {
     reopened.delete_entry(&all[0].id).unwrap();
     assert_eq!(reopened.list_summaries().unwrap().len(), 1);
 }
+
+#[test]
+fn create_identity_and_vault_persists_x25519_key_across_reunlocks() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("persistent_identity.db");
+    let db_str = db_path.to_string_lossy().to_string();
+    let hw = vec![0x42u8; 32];
+
+    let s1 = vault_core::api::create_identity_and_vault(
+        db_str.clone(),
+        "TestMasterPass#1".into(),
+        hw.clone(),
+    )
+    .expect("first unlock");
+    vault_core::api::lock_session(s1.session_id.clone()).unwrap();
+
+    let s2 = vault_core::api::create_identity_and_vault(
+        db_str,
+        "TestMasterPass#1".into(),
+        hw,
+    )
+    .expect("second unlock");
+
+    assert_eq!(
+        s1.x25519_public_hex, s2.x25519_public_hex,
+        "device X25519 identity key must persist across lock/unlock restarts"
+    );
+    assert_eq!(s1.ed25519_public_hex, s2.ed25519_public_hex);
+    vault_core::api::lock_session(s2.session_id).unwrap();
+}

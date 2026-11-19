@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{Result, VaultError};
-use crate::identity::{KeyEncryptionKey, VaultPassword};
+use crate::identity::{KeyEncryptionKey, MasterIdentitySeed, VaultPassword};
 use crate::otp::{totp_from_base32, OtpAlgorithm};
 
 const SENTINEL_PLAINTEXT: &[u8] = b"LAVAULT-SQLITE-SENTINEL-V1";
@@ -381,6 +381,70 @@ impl PasswordTotpVault {
             return Err(VaultError::Storage(format!("entry '{id}' not found")));
         }
         Ok(())
+    }
+
+    pub fn store_identity_seed(&self, seed: &MasterIdentitySeed) -> Result<()> {
+        let mut nonce = [0u8; 24];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| VaultError::Crypto(format!("getrandom seed nonce failed: {e}")))?;
+        let cipher = XChaCha20Poly1305::new(self.db_key.as_bytes().into());
+        let ct = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: seed.as_bytes(),
+                    aad: b"vault_meta:master_seed",
+                },
+            )
+            .map_err(|e| VaultError::Crypto(format!("seed encrypt failed: {e}")))?;
+        let mut combined = Vec::with_capacity(24 + ct.len());
+        combined.extend_from_slice(&nonce);
+        combined.extend_from_slice(&ct);
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO vault_meta (k, v) VALUES ('master_seed', ?1)",
+                params![combined],
+            )
+            .map_err(|e| VaultError::Storage(format!("seed write failed: {e}")))?;
+        Ok(())
+    }
+
+    pub fn load_or_create_identity_seed(&self) -> Result<MasterIdentitySeed> {
+        let existing: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT v FROM vault_meta WHERE k = 'master_seed'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(blob) = existing {
+            if blob.len() < 24 + 32 + 16 {
+                return Err(VaultError::AuthFailed("corrupt persisted master_seed".into()));
+            }
+            let nonce = &blob[..24];
+            let ct = &blob[24..];
+            let cipher = XChaCha20Poly1305::new(self.db_key.as_bytes().into());
+            let mut pt = cipher
+                .decrypt(
+                    XNonce::from_slice(nonce),
+                    Payload {
+                        msg: ct,
+                        aad: b"vault_meta:master_seed",
+                    },
+                )
+                .map_err(|_| VaultError::AuthFailed("master_seed decrypt failed".into()))?;
+            let arr: [u8; 32] = pt
+                .as_slice()
+                .try_into()
+                .map_err(|_| VaultError::Storage("invalid master_seed length".into()))?;
+            pt.zeroize();
+            return Ok(MasterIdentitySeed::from_bytes(arr));
+        }
+
+        let seed = MasterIdentitySeed::generate()?;
+        self.store_identity_seed(&seed)?;
+        Ok(seed)
     }
 
     pub fn export_kdbx_compatible(&self) -> Result<KdbxCompatDocument> {

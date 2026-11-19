@@ -194,6 +194,7 @@ void main() {
     await tester.tap(find.text('Unlocker'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Workstation-Win11'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('approve_req_wifi_01')));
     await tester.tap(find.byKey(const Key('approve_req_wifi_01')));
     await tester.pumpAndSettle();
 
@@ -206,8 +207,12 @@ void main() {
     await tester.tap(find.byKey(const Key('sign_bcur_btn')));
     await tester.pumpAndSettle();
     expect(find.text('ur:lavault-res/hihihihi'), findsOneWidget);
+    expect(find.byKey(const Key('copy_ur_res_btn')), findsOneWidget);
 
     // Tab 3: Peers & Guardians + Triple Recovery
+    await tester.tap(find.text('Peers'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('copy_this_device_key_btn')), findsOneWidget);
     await tester.tap(find.text('Peers'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const Key('generate_recovery_btn')));

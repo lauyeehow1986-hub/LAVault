@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -60,14 +61,17 @@ class _UnlockerTabState extends State<UnlockerTab> {
       );
       return;
     }
+    bool scanHandled = false;
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SizedBox(
         height: 360,
         child: MobileScanner(
           onDetect: (capture) {
+            if (scanHandled) return;
             final code = capture.barcodes.firstOrNull?.rawValue;
             if (code != null && code.toLowerCase().startsWith('ur:lavault-req/')) {
+              scanHandled = true;
               Navigator.of(ctx).pop();
               _urController.text = code;
               _submitUrPayload(code);
@@ -111,6 +115,96 @@ class _UnlockerTabState extends State<UnlockerTab> {
           ],
         ),
         const SizedBox(height: 12),
+        Text(
+          'Air-Gapped Optical QR (ur:lavault-req / ur:lavault-res)',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          key: const Key('bcur_input_field'),
+          controller: _urController,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Scanned/pasted challenge (ur:lavault-req/...)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _openCameraQrScanner,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan Camera QR'),
+            ),
+            FilledButton.icon(
+              key: const Key('sign_bcur_btn'),
+              onPressed: () => _submitUrPayload(_urController.text),
+              icon: const Icon(Icons.verified_user),
+              label: const Text('Approve & Sign ur:lavault-res'),
+            ),
+          ],
+        ),
+        if (_qrError != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(_qrError!, style: const TextStyle(color: Colors.red)),
+          ),
+        if (_lastResponseUr != null) ...[
+          const SizedBox(height: 12),
+          Card(
+            color: Theme.of(context).colorScheme.primaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.check_circle, color: Colors.green),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Signed Response Ready (ur:lavault-res)',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      FilledButton.icon(
+                        key: const Key('copy_ur_res_btn'),
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: _lastResponseUr!));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Copied ur:lavault-res response!'),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.copy, size: 16),
+                        label: const Text('Copy Response'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Center(
+                    child: QrImageView(
+                      data: _lastResponseUr!,
+                      size: 180,
+                      backgroundColor: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    _lastResponseUr!,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        const Divider(height: 24),
         Row(
           children: [
             Text(
@@ -181,57 +275,6 @@ class _UnlockerTabState extends State<UnlockerTab> {
             ),
           ),
         ),
-        const Divider(height: 24),
-        Text(
-          'Air-Gapped Optical QR (ur:lavault-req / ur:lavault-res)',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          key: const Key('bcur_input_field'),
-          controller: _urController,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Paste or scan ur:lavault-req/...',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            OutlinedButton.icon(
-              onPressed: _openCameraQrScanner,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('Scan Camera QR'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              key: const Key('sign_bcur_btn'),
-              onPressed: () => _submitUrPayload(_urController.text),
-              icon: const Icon(Icons.verified_user),
-              label: const Text('Approve & Sign ur:lavault-res'),
-            ),
-          ],
-        ),
-        if (_qrError != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(_qrError!, style: const TextStyle(color: Colors.red)),
-          ),
-        if (_lastResponseUr != null) ...[
-          const SizedBox(height: 12),
-          Center(
-            child: QrImageView(
-              data: _lastResponseUr!,
-              size: 180,
-              backgroundColor: Colors.white,
-            ),
-          ),
-          SelectableText(
-            _lastResponseUr!,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-          ),
-        ],
       ],
       ),
     );
