@@ -7,7 +7,8 @@ use qrcode::QrCode;
 use vault_core::identity::{DerivedIdentityKeys, MasterIdentitySeed};
 use vault_core::transport::{
     build_unlock_challenge_for_vlt, encode_8word_verifier, encode_bcur_multipart,
-    verify_and_extract_unlock_dek, EphemeralResponseSecret, UnlockChallenge, UnlockResponse,
+    verify_and_extract_unlock_dek_optional_vk, EphemeralResponseSecret, UnlockChallenge,
+    UnlockResponse,
 };
 use vault_core::vlt::{
     decrypt_bytes_with_dek, encrypt_bytes_to_vlt, DirectWrapMethod, PayloadCipher, VltOptions,
@@ -76,7 +77,7 @@ pub struct PhoneTestSession {
     pub vlt_bytes: Vec<u8>,
     pub ur_request: String,
     pub verifier_8words: String,
-    phone_verifying_key: VerifyingKey,
+    phone_verifying_key: Option<VerifyingKey>,
     ephem_secret: EphemeralResponseSecret,
 }
 
@@ -84,10 +85,10 @@ impl PhoneTestSession {
     pub fn complete_with_ur_response(&self, ur_res: &str) -> Result<Vec<u8>> {
         let trimmed = ur_res.trim();
         let response = decode_qr_response(trimmed)?;
-        let dek = verify_and_extract_unlock_dek(
+        let dek = verify_and_extract_unlock_dek_optional_vk(
             &response,
             &self.ephem_secret,
-            &self.phone_verifying_key,
+            self.phone_verifying_key.as_ref(),
         )?;
         Ok(decrypt_bytes_with_dek(&self.vlt_bytes, &dek)?)
     }
@@ -95,7 +96,7 @@ impl PhoneTestSession {
 
 pub fn prepare_phone_test_session(
     phone_x25519_hex: &str,
-    phone_ed25519_hex: &str,
+    phone_ed25519_hex: Option<&str>,
     pc_owner_keys: Option<&DerivedIdentityKeys>,
     payload: &[u8],
     vlt_out: &Path,
@@ -104,11 +105,17 @@ pub fn prepare_phone_test_session(
     let x_arr: [u8; 32] = hex::decode(phone_x25519_hex.trim())?
         .try_into()
         .map_err(|_| anyhow!("phone X25519 public key must be 32 bytes (64 hex chars)"))?;
-    let e_arr: [u8; 32] = hex::decode(phone_ed25519_hex.trim())?
-        .try_into()
-        .map_err(|_| anyhow!("phone Ed25519 verifying key must be 32 bytes (64 hex chars)"))?;
-    let phone_verifying_key = VerifyingKey::from_bytes(&e_arr)
-        .map_err(|e| anyhow!("invalid phone Ed25519 public key: {e}"))?;
+    let phone_verifying_key = if let Some(ed_hex) = phone_ed25519_hex {
+        let e_arr: [u8; 32] = hex::decode(ed_hex.trim())?
+            .try_into()
+            .map_err(|_| anyhow!("phone Ed25519 verifying key must be 32 bytes (64 hex chars)"))?;
+        Some(
+            VerifyingKey::from_bytes(&e_arr)
+                .map_err(|e| anyhow!("invalid phone Ed25519 public key: {e}"))?,
+        )
+    } else {
+        None
+    };
 
     let generated_owner;
     let owner = match pc_owner_keys {

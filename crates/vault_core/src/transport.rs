@@ -643,15 +643,26 @@ pub fn verify_and_extract_unlock_dek(
     pc_ephem: &EphemeralResponseSecret,
     expected_responder_vk: &VerifyingKey,
 ) -> Result<DataEncryptionKey> {
-    let sig_arr: [u8; 64] = response
-        .signature
-        .as_slice()
-        .try_into()
-        .map_err(|_| VaultError::AuthFailed("invalid response signature len".into()))?;
-    let sig = Signature::from_bytes(&sig_arr);
-    expected_responder_vk
-        .verify(&response.signing_digest(), &sig)
-        .map_err(|_| VaultError::AuthFailed("UnlockResponse Ed25519 signature invalid".into()))?;
+    verify_and_extract_unlock_dek_optional_vk(response, pc_ephem, Some(expected_responder_vk))
+}
+
+/// Extract DEK from an `UnlockResponse`, optionally verifying an explicit Ed25519 responder key
+/// (still cryptographically bound to the .vlt X25519 slot key via DH + ChaCha20-Poly1305).
+pub fn verify_and_extract_unlock_dek_optional_vk(
+    response: &UnlockResponse,
+    pc_ephem: &EphemeralResponseSecret,
+    expected_responder_vk: Option<&VerifyingKey>,
+) -> Result<DataEncryptionKey> {
+    if let Some(vk) = expected_responder_vk {
+        let sig_arr: [u8; 64] = response
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| VaultError::AuthFailed("invalid response signature len".into()))?;
+        let sig = Signature::from_bytes(&sig_arr);
+        vk.verify(&response.signing_digest(), &sig)
+            .map_err(|_| VaultError::AuthFailed("UnlockResponse Ed25519 signature invalid".into()))?;
+    }
 
     let resp_epk_arr: [u8; 32] = response
         .responder_epk

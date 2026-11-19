@@ -89,6 +89,8 @@ pub enum Commands {
         totp_iterations: usize,
         #[arg(long)]
         totp_secret: Option<String>,
+        #[arg(long, default_value_t = 6)]
+        digits: u32,
         #[arg(long, default_value_t = 0)]
         live_totp_secs: u64,
         #[arg(long)]
@@ -99,7 +101,7 @@ pub enum Commands {
         #[arg(long)]
         phone_x25519: String,
         #[arg(long)]
-        phone_ed25519: String,
+        phone_ed25519: Option<String>,
         #[arg(long, default_value = "LaVault phone stress test secret!")]
         payload: String,
         #[arg(long, default_value = ".")]
@@ -317,6 +319,7 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
             rounds,
             totp_iterations,
             totp_secret,
+            digits,
             live_totp_secs,
             qr_html_out,
         } => {
@@ -325,14 +328,14 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
             let algs = [OtpAlgorithm::Sha1, OtpAlgorithm::Sha256, OtpAlgorithm::Sha512];
             for i in 0..totp_iterations {
                 let ts = 1_700_000_000u64 + (i as u64) * 30;
-                let _ = totp_from_base32(&secret, ts, 30, 6, algs[i % 3])?;
+                let _ = totp_from_base32(&secret, ts, 30, digits, algs[i % 3])?;
             }
-            let (b1, _) = totp_from_base32(&secret, 59, 30, 6, OtpAlgorithm::Sha1)?;
-            let (b2, _) = totp_from_base32(&secret, 60, 30, 6, OtpAlgorithm::Sha1)?;
+            let (b1, _) = totp_from_base32(&secret, 59, 30, digits, OtpAlgorithm::Sha1)?;
+            let (b2, _) = totp_from_base32(&secret, 60, 30, digits, OtpAlgorithm::Sha1)?;
             assert_ne!(b1, b2, "boundary rollover check failed");
             let totp_ms = totp_start.elapsed().as_secs_f64() * 1000.0;
             println!(
-                "[TOTP Stress] {totp_iterations} RFC 6238 generations (SHA1/256/512) passed in {totp_ms:.1} ms ({:.0} ops/s)",
+                "[TOTP Stress] {totp_iterations} RFC 6238 generations ({digits}-digit, SHA1/256/512) passed in {totp_ms:.1} ms ({:.0} ops/s)",
                 (totp_iterations as f64) / (totp_ms / 1000.0).max(0.001)
             );
 
@@ -390,9 +393,9 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
 
             if live_totp_secs > 0 {
                 println!(
-                    "\n=== Live TOTP Parity Mode ({live_totp_secs}s) ==="
+                    "\n=== Live TOTP Parity Mode ({live_totp_secs}s, {digits} digits) ==="
                 );
-                println!("Add this exact Base32 Secret in your Phone App -> Vault + TOTP tab (+ button): {secret}");
+                println!("Add or open this exact Base32 Secret in Phone App -> Vault + TOTP tab: {secret}");
                 let deadline = Instant::now() + std::time::Duration::from_secs(live_totp_secs);
                 let mut last_tick_sec = 0u64;
                 while Instant::now() < deadline {
@@ -402,8 +405,9 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
                         .as_secs();
                     if now != last_tick_sec {
                         last_tick_sec = now;
-                        let (code, rem) = totp_from_base32(&secret, now, 30, 6, OtpAlgorithm::Sha1)?;
-                        println!("[UTC {now}] Code: {code}  |  {rem:02}s remaining");
+                        let (code, rem) =
+                            totp_from_base32(&secret, now, 30, digits, OtpAlgorithm::Sha1)?;
+                        println!("[UTC {now}] {digits}-digit TOTP: {code}  |  {rem:02}s remaining");
                     }
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
@@ -424,7 +428,7 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
                 let html_path = out_dir.join(format!("phone_test_{iter}.html"));
                 let session = prepare_phone_test_session(
                     &phone_x25519,
-                    &phone_ed25519,
+                    phone_ed25519.as_deref(),
                     None,
                     iter_payload.as_bytes(),
                     &vlt_path,

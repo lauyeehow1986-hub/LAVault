@@ -201,6 +201,7 @@ fn stress_cli_command_runs_benchmark_and_generates_qr_html() {
             rounds: 15,
             totp_iterations: 500,
             totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
+            digits: 6,
             live_totp_secs: 0,
             qr_html_out: Some(qr_html.clone()),
         },
@@ -228,13 +229,33 @@ fn phone_test_qr_challenge_fulfill_and_decrypt_end_to_end() {
 
     let session = desktop_daemon::qr::prepare_phone_test_session(
         &phone_x25519_hex,
-        &phone_ed25519_hex,
+        Some(&phone_ed25519_hex),
         Some(&pc_owner_keys),
         b"LaVault phone stress payload #1",
         &vlt_out,
         &qr_html,
     )
     .expect("prepare phone test session");
+
+    // Also test X25519-only mode (no Ed25519 key copied from phone UI)
+    let session_x_only = desktop_daemon::qr::prepare_phone_test_session(
+        &phone_x25519_hex,
+        None,
+        Some(&pc_owner_keys),
+        b"LaVault X25519-only payload",
+        &dir.path().join("xonly.vlt"),
+        &dir.path().join("xonly.html"),
+    )
+    .expect("prepare phone x25519-only session");
+    let x_challenge =
+        vault_core::transport::UnlockChallenge::from_bcur(&session_x_only.ur_request).unwrap();
+    let x_response =
+        vault_core::transport::fulfill_unlock_challenge(&x_challenge, "phone", &phone_keys)
+            .unwrap();
+    let x_decrypted = session_x_only
+        .complete_with_ur_response(&x_response.to_bcur().unwrap())
+        .expect("complete X25519-only phone decryption");
+    assert_eq!(x_decrypted, b"LaVault X25519-only payload");
 
     assert!(vlt_out.exists());
     let html = std::fs::read_to_string(&qr_html).unwrap();
