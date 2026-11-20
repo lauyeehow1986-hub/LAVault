@@ -5,8 +5,8 @@ use vault_core::recovery::{
     import_rkf_keyfile, recover_seed_from_guardian_capsules,
 };
 use vault_core::shamir::{
-    secret_commitment, shamir_reconstruct_secret, shamir_split_secret_deterministic,
-    shamir_split_secret_random,
+    parse_slip39_uri, secret_commitment, shamir_reconstruct_secret,
+    shamir_split_secret_deterministic, shamir_split_secret_random, slip39_uri,
 };
 
 #[test]
@@ -105,4 +105,20 @@ fn guardian_signed_qr_capsules_roundtrip_and_signature_verification() {
     let mut forged = capsules[0..2].to_vec();
     forged[0].signature_hex = "00".repeat(64);
     assert!(recover_seed_from_guardian_capsules(&forged, &keys.ed25519_verifying()).is_err());
+}
+
+#[test]
+fn slip39_uri_parse_roundtrip_and_checksum_rejection() {
+    let secret = [0xA7u8; 32];
+    let shares = shamir_split_secret_random(&secret, 2, 3).unwrap();
+    let uris: Vec<String> = shares.iter().map(slip39_uri).collect();
+
+    let p1 = parse_slip39_uri(&uris[0]).expect("parse uri 1");
+    let p3 = parse_slip39_uri(&uris[2]).expect("parse uri 3");
+    let reconstructed =
+        shamir_reconstruct_secret(&[p1, p3], Some(&secret_commitment(&secret))).unwrap();
+    assert_eq!(reconstructed.as_slice(), &secret);
+
+    let tampered = format!("{}00", &uris[1][..uris[1].len() - 2]);
+    assert!(parse_slip39_uri(&tampered).is_err());
 }

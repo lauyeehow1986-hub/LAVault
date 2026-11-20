@@ -87,6 +87,57 @@ pub fn slip39_uri(share: &ShamirShare) -> String {
     )
 }
 
+/// Parse and checksum-verify a `lavault-share://v1/<K>-of-<N>/idx-<idx>/<hex>.<csum>` URI.
+pub fn parse_slip39_uri(uri: &str) -> Result<ShamirShare> {
+    let body = uri
+        .trim()
+        .strip_prefix("lavault-share://v1/")
+        .ok_or_else(|| {
+            VaultError::InvalidInput("share URI must start with lavault-share://v1/".into())
+        })?;
+    let parts: Vec<&str> = body.split('/').collect();
+    if parts.len() != 3 {
+        return Err(VaultError::InvalidInput(
+            "invalid share URI layout; expected <K>-of-<N>/idx-<idx>/<hex>.<csum>".into(),
+        ));
+    }
+    let (k_str, n_str) = parts[0]
+        .split_once("-of-")
+        .ok_or_else(|| VaultError::InvalidInput("invalid <K>-of-<N> quorum segment".into()))?;
+    let k: u8 = k_str
+        .parse()
+        .map_err(|_| VaultError::InvalidInput("invalid K value in share URI".into()))?;
+    let n: u8 = n_str
+        .parse()
+        .map_err(|_| VaultError::InvalidInput("invalid N value in share URI".into()))?;
+    validate_params(k, n)?;
+
+    let idx_str = parts[1]
+        .strip_prefix("idx-")
+        .ok_or_else(|| VaultError::InvalidInput("invalid idx-<idx> segment".into()))?;
+    let idx: u8 = idx_str
+        .parse()
+        .map_err(|_| VaultError::InvalidInput("invalid share index".into()))?;
+    if idx == 0 || idx > n {
+        return Err(VaultError::Quorum(format!(
+            "share index {idx} out of range 1..={n}"
+        )));
+    }
+
+    let (hex_data, csum) = parts[2]
+        .split_once('.')
+        .ok_or_else(|| VaultError::InvalidInput("missing .<checksum> suffix".into()))?;
+    let data = hex::decode(hex_data.trim())
+        .map_err(|e| VaultError::InvalidInput(format!("invalid share hex payload: {e}")))?;
+    let expected_csum = share_checksum(idx, &data);
+    if expected_csum != csum.trim().to_ascii_lowercase() {
+        return Err(VaultError::AuthFailed(format!(
+            "guardian share idx-{idx} checksum mismatch"
+        )));
+    }
+    Ok(ShamirShare::new(idx, k, n, data))
+}
+
 fn validate_params(threshold_k: u8, total_n: u8) -> Result<()> {
     if threshold_k == 0 || threshold_k > total_n {
         return Err(VaultError::Quorum(format!(

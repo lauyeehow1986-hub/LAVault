@@ -4,22 +4,28 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use vault_core::identity::{DerivedIdentityKeys, MasterIdentitySeed};
+use vault_core::identity::{DerivedIdentityKeys, MasterIdentitySeed, VaultPassword};
 use vault_core::otp::{totp_from_base32, OtpAlgorithm};
+use vault_core::recovery::{import_bip39_mnemonic, import_rkf_keyfile};
+use vault_core::shamir::{parse_slip39_uri, shamir_reconstruct_secret};
 use vault_core::transport::{
     build_unlock_challenge_for_vlt, decode_bcur_multipart, encode_8word_verifier,
     encode_bcur_multipart, fulfill_unlock_challenge, verify_and_extract_unlock_dek,
-    UnlockChallenge,
+    verify_and_extract_unlock_dek_optional_vk, UnlockChallenge, UnlockResponse,
 };
 use vault_core::vlt::{
     add_direct_recipient_to_vlt, decrypt_bytes_with_dek, decrypt_bytes_with_direct_slot,
-    decrypt_bytes_with_quorum_slots, decrypt_directory_from_vlt, encrypt_bytes_to_vlt,
-    encrypt_directory_to_vlt, remove_direct_recipient_from_vlt, DirectWrapMethod, PayloadCipher,
-    VltOptions,
+    decrypt_bytes_with_quorum_slots, decrypt_directory_from_vlt,
+    decrypt_directory_from_vlt_with_dek, encrypt_bytes_to_vlt, encrypt_directory_to_vlt,
+    remove_direct_recipient_from_vlt, DirectWrapMethod, PayloadCipher, VltOptions,
 };
 
 use crate::mount::{MountSessionConfig, VirtualDriveManager};
-use crate::qr::{prepare_phone_test_session, run_qr_challenge_prompt, save_stress_qr_html};
+use crate::qr::{
+    prepare_phone_test_session, run_qr_challenge_prompt, save_stress_qr_html,
+    write_unlock_qr_html,
+};
+use crate::wifi::run_lan_unlock_blocking;
 
 #[derive(Debug, Parser)]
 #[command(name = "lavault", about = "LaVault Zero-Cloud File & Virtual Volume Unlocker")]
@@ -59,6 +65,21 @@ pub enum Commands {
         /// Quorum member seeds formatted as `member_id:seed_hex`
         #[arg(long)]
         quorum_seeds: Vec<String>,
+        /// Listen on local Wi-Fi LAN for 1-tap phone approval (no copy-paste)
+        #[arg(long, default_value_t = false)]
+        wifi: bool,
+        /// TCP port for `--wifi` unlock listener
+        #[arg(long, default_value_t = 53319)]
+        port: u16,
+        /// Treat encrypted `.vlt` payload as a compressed folder archive
+        #[arg(long, default_value_t = false)]
+        dir: bool,
+        /// Write scannable HTML QR unlock page to this path (default: unlock_qr.html)
+        #[arg(long)]
+        qr_html: Option<PathBuf>,
+        /// Supply `ur:lavault-res/...` directly without interactive stdin prompt
+        #[arg(long)]
+        qr_res: Option<String>,
     },
     /// Mount an encrypted virtual volume directory (locks key in RAM and wipes on disconnect)
     Mount {
@@ -112,6 +133,19 @@ pub enum Commands {
         batch_res: Vec<String>,
         #[arg(long, default_value_t = false)]
         no_wait: bool,
+    },
+    /// Verify Triple Recovery backups (24-word BIP-39, .rkf hex/pass, or K-of-N guardian share URIs)
+    VerifyRecovery {
+        #[arg(long)]
+        bip39: Option<String>,
+        #[arg(long)]
+        rkf_hex: Option<String>,
+        #[arg(long)]
+        rkf_pass: Option<String>,
+        #[arg(long)]
+        shares: Vec<String>,
+        #[arg(long)]
+        expected_x25519: Option<String>,
     },
 }
 
@@ -209,8 +243,14 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
             slot,
             seed_hex,
             quorum_seeds,
+            wifi,
+            port,
+            dir,
+            qr_html,
+            qr_res,
         } => {
             let raw = std::fs::read(&file)?;
+            let is_dir_vlt = dir || file.to_string_lossy().ends_with(".dir.vlt");
             if !quorum_seeds.is_empty() {
                 let mut member_keys = Vec::with_capacity(quorum_seeds.len());
                 for item in quorum_seeds {
@@ -231,7 +271,7 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
             } else if let Some(sh) = seed_hex {
                 let keys = keys_from_seed_hex(Some(sh))?;
                 let out_path = output.unwrap_or_else(|| file.with_extension("unlocked"));
-                if out_path.extension().is_none() && file.to_string_lossy().ends_with(".dir.vlt") {
+                if is_dir_vlt && out_path.extension().is_none() {
                     decrypt_directory_from_vlt(&file, &out_path, &slot, &keys)?;
                 } else {
                     let pt = decrypt_bytes_with_direct_slot(&raw, &slot, &keys)?;
@@ -239,11 +279,69 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
                 }
                 println!("Unlocked -> {}", out_path.display());
             } else {
-                // Interactive optical QR challenge generation when no local seed is supplied
-                let (challenge, _) =
-                    build_unlock_challenge_for_vlt(&raw, &slot, "LaVault-CLI")?;
-                let verifier = encode_8word_verifier(&challenge.challenge_nonce);
-                run_qr_challenge_prompt(&challenge, &verifier)?;
+                let target_label = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| file.display().to_string());
+                let (challenge, ephem) =
+                    build_unlock_challenge_for_vlt(&raw, &slot, "LaVault-PC")?;
+                let out_path = output.unwrap_or_else(|| {
+                    if is_dir_vlt {
+                        file.with_extension("unlocked_dir")
+                    } else {
+                        file.with_extension("unlocked")
+                    }
+                });
+                let html_path = qr_html.unwrap_or_else(|| PathBuf::from("unlock_qr.html"));
+
+                let dek = if wifi {
+                    let outcome = run_lan_unlock_blocking(
+                        port,
+                        challenge,
+                        ephem,
+                        target_label,
+                        &html_path,
+                    )?;
+                    println!("Phone approval received from responder '{}'.", outcome.responder_id);
+                    outcome.dek
+                } else {
+                    let ur_req = challenge.to_bcur()?;
+                    let verifier = encode_8word_verifier(&challenge.challenge_nonce);
+                    write_unlock_qr_html(&ur_req, &verifier, &target_label, None, &html_path)?;
+                    println!("Saved scannable QR unlock page -> {}", html_path.display());
+                    run_qr_challenge_prompt(&challenge, &verifier)?;
+
+                    let res_str = if let Some(r) = qr_res {
+                        r
+                    } else {
+                        loop {
+                            print!("\nPaste ur:lavault-res/... from phone (or 'quit' to abort): ");
+                            io::stdout().flush()?;
+                            let mut line = String::new();
+                            if io::stdin().read_line(&mut line)? == 0 {
+                                return Err(anyhow!("EOF reached before receiving phone response"));
+                            }
+                            let trimmed = line.trim();
+                            if trimmed.eq_ignore_ascii_case("quit") {
+                                return Err(anyhow!("Unlock aborted by user"));
+                            }
+                            if !trimmed.is_empty() {
+                                break trimmed.to_string();
+                            }
+                        }
+                    };
+                    let response = UnlockResponse::from_bcur(res_str.trim())?;
+                    verify_and_extract_unlock_dek_optional_vk(&response, &ephem, None)?
+                };
+
+                if is_dir_vlt {
+                    decrypt_directory_from_vlt_with_dek(&file, &out_path, &dek)?;
+                    println!("Unlocked directory -> {}", out_path.display());
+                } else {
+                    let pt = decrypt_bytes_with_dek(&raw, &dek)?;
+                    std::fs::write(&out_path, pt)?;
+                    println!("Unlocked -> {}", out_path.display());
+                }
             }
         }
         Commands::Mount {
@@ -484,6 +582,59 @@ pub fn execute_cli_command(cli: Cli) -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+        Commands::VerifyRecovery {
+            bip39,
+            rkf_hex,
+            rkf_pass,
+            shares,
+            expected_x25519,
+        } => {
+            let (mode, seed) = if let Some(phrase) = bip39 {
+                ("BIP-0039 24-word mnemonic", import_bip39_mnemonic(&phrase)?)
+            } else if let Some(hex_str) = rkf_hex {
+                let pass = rkf_pass.ok_or_else(|| {
+                    anyhow!("--rkf-pass is required when verifying a .rkf recovery keyfile")
+                })?;
+                let rkf_bytes = hex::decode(hex_str.trim())?;
+                let pw = VaultPassword::new(pass);
+                ("Encrypted .rkf Keyfile", import_rkf_keyfile(&rkf_bytes, &pw)?)
+            } else if !shares.is_empty() {
+                let parsed: Vec<_> = shares
+                    .iter()
+                    .map(|u| parse_slip39_uri(u))
+                    .collect::<vault_core::error::Result<Vec<_>>>()?;
+                let raw_seed = shamir_reconstruct_secret(&parsed, None)?;
+                let arr: [u8; 32] = raw_seed
+                    .try_into()
+                    .map_err(|_| anyhow!("reconstructed seed must be 32 bytes"))?;
+                (
+                    "K-of-N Shamir Guardian Shares",
+                    MasterIdentitySeed::from_bytes(arr),
+                )
+            } else {
+                return Err(anyhow!(
+                    "supply one of --bip39 \"...\", --rkf-hex ... --rkf-pass ..., or --shares ..."
+                ));
+            };
+
+            let keys = DerivedIdentityKeys::from_seed(&seed)?;
+            let recovered_x = hex::encode(keys.x25519_public_bytes());
+            let recovered_ed = hex::encode(keys.ed25519_public_bytes());
+            println!("Recovery Method   : {mode}");
+            println!("Recovered X25519  : {recovered_x}");
+            println!("Recovered Ed25519 : {recovered_ed}");
+
+            if let Some(expected) = expected_x25519 {
+                if !recovered_x.eq_ignore_ascii_case(expected.trim()) {
+                    return Err(anyhow!(
+                        "MISMATCH: expected X25519 {}, got {}",
+                        expected.trim(),
+                        recovered_x
+                    ));
+                }
+                println!("MATCH: Recovered X25519 key matches phone this_device 100%!");
             }
         }
     }

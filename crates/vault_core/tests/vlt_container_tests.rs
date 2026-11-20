@@ -1,10 +1,13 @@
 use tempfile::tempdir;
 use vault_core::identity::{DerivedIdentityKeys, MasterIdentitySeed};
+use vault_core::transport::{
+    build_unlock_challenge_for_vlt, fulfill_unlock_challenge, verify_and_extract_unlock_dek,
+};
 use vault_core::vlt::{
     add_direct_recipient_to_vlt, decrypt_bytes_with_direct_slot, decrypt_bytes_with_quorum_slots,
-    decrypt_directory_from_vlt, encrypt_bytes_to_vlt, encrypt_directory_to_vlt,
-    inspect_vlt_header, remove_direct_recipient_from_vlt, DirectWrapMethod, PayloadCipher,
-    VltOptions, VLT_MAGIC,
+    decrypt_directory_from_vlt, decrypt_directory_from_vlt_with_dek, encrypt_bytes_to_vlt,
+    encrypt_directory_to_vlt, inspect_vlt_header, remove_direct_recipient_from_vlt,
+    DirectWrapMethod, PayloadCipher, VltOptions, VLT_MAGIC,
 };
 
 fn make_identity(tag: u8) -> DerivedIdentityKeys {
@@ -147,4 +150,41 @@ fn vlt_directory_archive_and_recipient_add_remove() {
     let updated = remove_direct_recipient_from_vlt(&vlt_bytes, &owner, "friend").unwrap();
     assert!(decrypt_bytes_with_direct_slot(&updated, "friend", &friend).is_err());
     assert!(decrypt_bytes_with_direct_slot(&updated, "owner", &owner).is_ok());
+}
+
+#[test]
+fn vlt_directory_decrypt_with_dek_roundtrip() {
+    let owner = make_identity(30);
+    let phone = make_identity(31);
+    let dir = tempdir().unwrap();
+    let src_dir = dir.path().join("folder_in");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("notes.txt"), b"folder content ok").unwrap();
+
+    let vlt_path = dir.path().join("folder_in.dir.vlt");
+    encrypt_directory_to_vlt(
+        &src_dir,
+        &vlt_path,
+        &owner,
+        &VltOptions {
+            cipher: PayloadCipher::ChaCha20Poly1305,
+            wrap_method: DirectWrapMethod::Aes256Kw,
+            direct_recipients: vec![("phone".into(), phone.x25519_public_bytes())],
+            quorum_members: vec![],
+            quorum_threshold_k: 0,
+        },
+    )
+    .unwrap();
+
+    let vlt_bytes = std::fs::read(&vlt_path).unwrap();
+    let (challenge, ephem) = build_unlock_challenge_for_vlt(&vlt_bytes, "phone", "PC").unwrap();
+    let resp = fulfill_unlock_challenge(&challenge, "phone", &phone).unwrap();
+    let dek = verify_and_extract_unlock_dek(&resp, &ephem, &phone.ed25519_verifying()).unwrap();
+
+    let out_dir = dir.path().join("folder_out");
+    decrypt_directory_from_vlt_with_dek(&vlt_path, &out_dir, &dek).expect("decrypt dir with dek");
+    assert_eq!(
+        std::fs::read(out_dir.join("notes.txt")).unwrap(),
+        b"folder content ok"
+    );
 }

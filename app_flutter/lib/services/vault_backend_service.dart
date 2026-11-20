@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -106,6 +107,7 @@ class PendingUnlockRequest {
   final String targetFile;
   final String slotType; // '1-of-N Direct' | 'K-of-N Quorum (2-of-3)'
   final String? urRequestPayload;
+  final String? callbackUrl;
   String status; // 'Pending' | 'Approved' | 'Denied'
   String? urResponsePayload;
 
@@ -116,6 +118,7 @@ class PendingUnlockRequest {
     required this.targetFile,
     required this.slotType,
     this.urRequestPayload,
+    this.callbackUrl,
     this.status = 'Pending',
     this.urResponsePayload,
   });
@@ -340,6 +343,8 @@ class VaultController extends ChangeNotifier {
   ];
   rust_api.RecoveryKitDto? recoveryKit;
   String? lastError;
+  String lastWifiHost = '';
+  String? wifiStatus;
   Timer? _totpTicker;
 
   VaultController({
@@ -523,12 +528,123 @@ class VaultController extends ChangeNotifier {
     return urRes;
   }
 
-  void respondToQueueItem(String id, bool approve) {
-    final idx = unlockQueue.indexWhere((r) => r.id == id);
-    if (idx != -1) {
-      unlockQueue[idx].status = approve ? 'Approved' : 'Denied';
-      notifyListeners();
+  String normalizeWifiBaseUrl(String raw) {
+    var s = raw.trim();
+    if (s.toLowerCase().startsWith('lavault-wifi://')) {
+      s = s.substring('lavault-wifi://'.length);
     }
+    if (!s.startsWith('http://') && !s.startsWith('https://')) {
+      s = 'http://$s';
+    }
+    final uri = Uri.parse(s);
+    final port = uri.hasPort ? uri.port : 53319;
+    return '${uri.scheme}://${uri.host}:$port';
+  }
+
+  Future<bool> fetchPendingWifiUnlock(String hostOrUrl) async {
+    final baseUrl = normalizeWifiBaseUrl(hostOrUrl);
+    lastWifiHost = baseUrl.replaceFirst('http://', '');
+    wifiStatus = 'Checking $lastWifiHost...';
+    notifyListeners();
+
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await client.getUrl(Uri.parse('$baseUrl/pending'));
+      final res = await req.close();
+      final body = await utf8.decodeStream(res);
+      if (res.statusCode != 200) {
+        wifiStatus = 'Wi-Fi error (${res.statusCode}): $body';
+        notifyListeners();
+        return false;
+      }
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      final reqId = (map['req_id'] ?? '').toString();
+      final requester = (map['requester_name'] ?? 'LaVault-PC').toString();
+      final targetFile = (map['target_file'] ?? 'file.vlt').toString();
+      final urReq = (map['ur_req'] ?? '').toString();
+      if (reqId.isEmpty || urReq.isEmpty) {
+        wifiStatus = 'Wi-Fi error: invalid challenge JSON from PC';
+        notifyListeners();
+        return false;
+      }
+
+      unlockQueue.removeWhere((item) => item.id == reqId);
+      unlockQueue.insert(
+        0,
+        PendingUnlockRequest(
+          id: reqId,
+          channel: 'Wi-Fi LAN (E2EE)',
+          requesterName: requester,
+          targetFile: targetFile,
+          slotType: '1-of-N Direct (Live Wi-Fi)',
+          urRequestPayload: urReq,
+          callbackUrl: baseUrl,
+        ),
+      );
+      wifiStatus = 'Ready: tap Approve Unlock below to unlock $targetFile';
+      notifyListeners();
+      return true;
+    } catch (e) {
+      wifiStatus = 'Wi-Fi error: $e';
+      notifyListeners();
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> respondToQueueItem(String id, bool approve) async {
+    final idx = unlockQueue.indexWhere((r) => r.id == id);
+    if (idx == -1) return;
+    final item = unlockQueue[idx];
+
+    if (item.callbackUrl != null && item.urRequestPayload != null) {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+      try {
+        if (approve) {
+          if (session == null) {
+            wifiStatus = 'Unlock the app vault first';
+            notifyListeners();
+            return;
+          }
+          final urRes = await api.approveBcurUnlockRequest(
+            sessionId: session!.sessionId,
+            urReq: item.urRequestPayload!,
+          );
+          final httpReq = await client.postUrl(
+            Uri.parse('${item.callbackUrl}/respond'),
+          );
+          httpReq.headers.contentType = ContentType.text;
+          httpReq.write(urRes);
+          final httpRes = await httpReq.close();
+          final body = await utf8.decodeStream(httpRes);
+          if (httpRes.statusCode != 200) {
+            wifiStatus = 'PC rejected unlock (${httpRes.statusCode}): $body';
+            notifyListeners();
+            return;
+          }
+          item.status = 'Approved (Sent to PC)';
+          item.urResponsePayload = urRes;
+          wifiStatus = 'Approved & sent to PC!';
+        } else {
+          final httpReq = await client.postUrl(
+            Uri.parse('${item.callbackUrl}/deny'),
+          );
+          await httpReq.close();
+          item.status = 'Denied';
+          wifiStatus = 'Unlock request denied';
+        }
+      } catch (e) {
+        wifiStatus = 'Wi-Fi send error: $e';
+      } finally {
+        client.close(force: true);
+      }
+      notifyListeners();
+      return;
+    }
+
+    item.status = approve ? 'Approved' : 'Denied';
+    notifyListeners();
   }
 
   void addAuthorizedPeer(String id, String x25519Hex, String transport) {

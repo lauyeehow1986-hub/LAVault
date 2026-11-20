@@ -59,6 +59,11 @@ fn cli_lock_unlock_and_recipient_management_1_of_n_and_2_of_3_quorum() {
                 format!("g2:{}", hex::encode([12u8; 32])),
                 format!("g3:{}", hex::encode([13u8; 32])),
             ],
+            wifi: false,
+            port: 53319,
+            dir: false,
+            qr_html: None,
+            qr_res: None,
         },
     })
     .expect("cli 2-of-3 quorum unlock");
@@ -90,6 +95,11 @@ fn cli_lock_unlock_and_recipient_management_1_of_n_and_2_of_3_quorum() {
             slot: "peer_phone".into(),
             seed_hex: Some(peer_seed_hex),
             quorum_seeds: vec![],
+            wifi: false,
+            port: 53319,
+            dir: false,
+            qr_html: None,
+            qr_res: None,
         },
     };
     execute_cli_command(unlock_cli).expect("cli unlock as peer");
@@ -117,6 +127,11 @@ fn cli_lock_unlock_and_recipient_management_1_of_n_and_2_of_3_quorum() {
             slot: "peer_phone".into(),
             seed_hex: Some(hex::encode([2u8; 32])),
             quorum_seeds: vec![],
+            wifi: false,
+            port: 53319,
+            dir: false,
+            qr_html: None,
+            qr_res: None,
         },
     };
     assert!(execute_cli_command(unlock_removed).is_err());
@@ -276,4 +291,126 @@ fn phone_test_qr_challenge_fulfill_and_decrypt_end_to_end() {
         .complete_with_ur_response(&ur_response)
         .expect("complete phone test decryption");
     assert_eq!(decrypted, b"LaVault phone stress payload #1");
+}
+
+#[tokio::test]
+async fn lan_wifi_unlock_server_end_to_end_roundtrip() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    let owner_keys = make_keys(10);
+    let phone_keys = make_keys(20);
+    let plaintext = b"Real LAN Wi-Fi 1-tap encrypted document";
+    let vlt = vault_core::vlt::encrypt_bytes_to_vlt(
+        plaintext,
+        &owner_keys,
+        &vault_core::vlt::VltOptions {
+            cipher: vault_core::vlt::PayloadCipher::ChaCha20Poly1305,
+            wrap_method: vault_core::vlt::DirectWrapMethod::Aes256Kw,
+            direct_recipients: vec![("phone".into(), phone_keys.x25519_public_bytes())],
+            quorum_members: vec![],
+            quorum_threshold_k: 0,
+        },
+    )
+    .unwrap();
+
+    let (challenge, ephem) =
+        vault_core::transport::build_unlock_challenge_for_vlt(&vlt, "phone", "PC-WiFi").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let phone_vk = phone_keys.ed25519_verifying();
+
+    let server_task = tokio::spawn(async move {
+        desktop_daemon::wifi::serve_lan_unlock_once(
+            listener,
+            challenge,
+            ephem,
+            "secret_doc.txt.vlt".into(),
+            Some(phone_vk),
+        )
+        .await
+    });
+
+    // Phone polls GET /pending
+    let mut s1 = TcpStream::connect(addr).await.unwrap();
+    s1.write_all(b"GET /pending HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp1 = String::new();
+    s1.read_to_string(&mut resp1).await.unwrap();
+    assert!(resp1.starts_with("HTTP/1.1 200 OK"));
+    let ur_marker = "\"ur_req\":\"";
+    let start = resp1.find(ur_marker).unwrap() + ur_marker.len();
+    let end = start + resp1[start..].find('"').unwrap();
+    let ur_req = &resp1[start..end];
+
+    let parsed_challenge = vault_core::transport::UnlockChallenge::from_bcur(ur_req).unwrap();
+    let phone_resp =
+        vault_core::transport::fulfill_unlock_challenge(&parsed_challenge, "phone", &phone_keys)
+            .unwrap();
+    let ur_res = phone_resp.to_bcur().unwrap();
+
+    // Phone POSTs /respond with ur:lavault-res/...
+    let mut s2 = TcpStream::connect(addr).await.unwrap();
+    let post_req = format!(
+        "POST /respond HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        ur_res.len(),
+        ur_res
+    );
+    s2.write_all(post_req.as_bytes()).await.unwrap();
+    let mut resp2 = String::new();
+    s2.read_to_string(&mut resp2).await.unwrap();
+    assert!(resp2.contains("unlocked"));
+
+    let outcome = server_task.await.unwrap().expect("lan unlock outcome");
+    let decrypted = vault_core::vlt::decrypt_bytes_with_dek(&vlt, &outcome.dek).unwrap();
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn cli_verify_recovery_bip39_rkf_and_shamir_shares() {
+    let seed = MasterIdentitySeed::from_bytes([0x66; 32]);
+    let keys = DerivedIdentityKeys::from_seed(&seed).unwrap();
+    let expected_x = hex::encode(keys.x25519_public_bytes());
+
+    let phrase = vault_core::recovery::export_bip39_mnemonic(&seed).unwrap();
+    execute_cli_command(Cli {
+        command: Commands::VerifyRecovery {
+            bip39: Some(phrase),
+            rkf_hex: None,
+            rkf_pass: None,
+            shares: vec![],
+            expected_x25519: Some(expected_x.clone()),
+        },
+    })
+    .expect("BIP-39 verify-recovery");
+
+    let rkf_pw = vault_core::identity::VaultPassword::new("Recovery-Keyfile-Pass#2026".into());
+    let rkf_bytes = vault_core::recovery::export_rkf_keyfile(&seed, &rkf_pw).unwrap();
+    execute_cli_command(Cli {
+        command: Commands::VerifyRecovery {
+            bip39: None,
+            rkf_hex: Some(hex::encode(&rkf_bytes)),
+            rkf_pass: Some("Recovery-Keyfile-Pass#2026".into()),
+            shares: vec![],
+            expected_x25519: Some(expected_x.clone()),
+        },
+    })
+    .expect(".rkf verify-recovery");
+
+    let shares = vault_core::shamir::shamir_split_secret_random(seed.as_bytes(), 2, 3).unwrap();
+    execute_cli_command(Cli {
+        command: Commands::VerifyRecovery {
+            bip39: None,
+            rkf_hex: None,
+            rkf_pass: None,
+            shares: vec![
+                vault_core::shamir::slip39_uri(&shares[0]),
+                vault_core::shamir::slip39_uri(&shares[2]),
+            ],
+            expected_x25519: Some(expected_x),
+        },
+    })
+    .expect("2-of-3 Shamir shares verify-recovery");
 }

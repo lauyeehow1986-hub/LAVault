@@ -255,3 +255,77 @@ pub fn save_stress_qr_html(
     std::fs::write(html_out, html)?;
     Ok(())
 }
+
+pub fn write_unlock_qr_html(
+    ur_request: &str,
+    verifier_8words: &str,
+    target_label: &str,
+    wifi_url: Option<&str>,
+    html_out: &Path,
+) -> Result<()> {
+    let wifi_card = if let Some(url) = wifi_url {
+        let wifi_payload = format!("lavault-wifi://{url}");
+        let wifi_svg = render_qr_svg(&wifi_payload)?;
+        let host_display = url.strip_prefix("http://").unwrap_or(url);
+        format!(
+            r#"  <div class="card">
+    <h2>1. Seamless 1-Tap Local Wi-Fi Unlock</h2>
+    <p>On your Android phone, open <strong>LaVault &rarr; Unlocker</strong>:</p>
+    <ul>
+      <li>Tap <strong>Scan Wi-Fi / QR</strong> and scan this tiny Wi-Fi code, OR</li>
+      <li>Type <code>{host_esc}</code> into <strong>PC Wi-Fi Address</strong> and tap <strong>Check PC</strong> &rarr; <strong>Approve Unlock</strong>.</li>
+    </ul>
+    <div class="qr-box">{wifi_svg}</div>
+    <p>Target: <code>{target_esc}</code></p>
+  </div>"#,
+            host_esc = html_escape(host_display),
+            wifi_svg = wifi_svg,
+            target_esc = html_escape(target_label),
+        )
+    } else {
+        String::new()
+    };
+
+    let req_svg = render_qr_svg(ur_request)?;
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LaVault Unlock Request</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; margin: 24px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; max-width: 1040px; margin: 0 auto; }}
+  .card {{ background: #1e293b; border-radius: 16px; padding: 24px; border: 1px solid #334155; }}
+  .qr-box {{ background: #ffffff; padding: 16px; border-radius: 12px; display: inline-block; margin: 14px 0; }}
+  code, pre {{ background: #0f172a; color: #38bdf8; padding: 8px 10px; border-radius: 8px; word-break: break-all; white-space: pre-wrap; font-size: 12px; display: block; }}
+  .verifier {{ font-size: 15px; font-weight: 700; color: #4ade80; margin: 10px 0; }}
+</style>
+</head>
+<body>
+<div class="grid">
+{wifi_card}
+  <div class="card">
+    <h2>Air-Gapped Optical QR Challenge</h2>
+    <p>Unlock target: <strong>{target_esc}</strong></p>
+    <div class="qr-box">{req_svg}</div>
+    <div class="verifier">8-Word Verifier: {verifier_esc}</div>
+    <pre>{ur_esc}</pre>
+  </div>
+</div>
+</body>
+</html>
+"#,
+        wifi_card = wifi_card,
+        target_esc = html_escape(target_label),
+        req_svg = req_svg,
+        verifier_esc = html_escape(verifier_8words),
+        ur_esc = html_escape(ur_request),
+    );
+
+    if let Some(parent) = html_out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(html_out, html)?;
+    Ok(())
+}

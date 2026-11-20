@@ -1,6 +1,9 @@
+use std::net::UdpSocket;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use ed25519_dalek::VerifyingKey;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -11,9 +14,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use vault_core::identity::{DataEncryptionKey, DerivedIdentityKeys};
 use vault_core::transport::{
-    build_unlock_challenge_for_vlt, fulfill_unlock_challenge, verify_and_extract_unlock_dek,
-    UnlockChallenge, UnlockResponse, MDNS_SERVICE_TYPE, MDNS_TCP_PORT,
+    build_unlock_challenge_for_vlt, encode_8word_verifier, fulfill_unlock_challenge,
+    verify_and_extract_unlock_dek, verify_and_extract_unlock_dek_optional_vk,
+    EphemeralResponseSecret, UnlockChallenge, UnlockResponse, MDNS_SERVICE_TYPE, MDNS_TCP_PORT,
 };
+
+use crate::qr::{render_terminal_qr, write_unlock_qr_html};
 
 #[derive(Debug, Clone)]
 pub struct PinnedTlsPeer {
@@ -245,4 +251,201 @@ pub async fn run_pinned_tls13_unlock_roundtrip(
 
     let dek = verify_and_extract_unlock_dek(&resp, &pc_ephem, &phone_keys.ed25519_verifying())?;
     Ok(dek)
+}
+
+pub struct LanUnlockOutcome {
+    pub dek: DataEncryptionKey,
+    pub responder_id: String,
+}
+
+pub fn detect_lan_ipv4() -> String {
+    if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = sock.local_addr() {
+                return addr.ip().to_string();
+            }
+        }
+    }
+    "127.0.0.1".to_string()
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+async fn send_http_json(stream: &mut TcpStream, status: &str, json_body: &str) -> Result<()> {
+    let resp = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        json_body.len(),
+        json_body
+    );
+    stream.write_all(resp.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>)> {
+    let mut buf = Vec::with_capacity(2048);
+    let mut tmp = [0u8; 1024];
+    let header_end = loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            return Err(anyhow!("unexpected EOF while reading HTTP headers"));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        if buf.len() > 64 * 1024 {
+            return Err(anyhow!("HTTP headers too large"));
+        }
+    };
+
+    let head_str = std::str::from_utf8(&buf[..header_end])
+        .map_err(|_| anyhow!("invalid UTF-8 in HTTP headers"))?;
+    let mut lines = head_str.lines();
+    let req_line = lines.next().ok_or_else(|| anyhow!("missing HTTP request line"))?;
+    let mut parts = req_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_ascii_uppercase();
+    let raw_path = parts.next().unwrap_or("/");
+    let path = raw_path.split('?').next().unwrap_or("/").to_string();
+
+    let mut content_len: usize = 0;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                content_len = v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    if content_len > 1024 * 1024 {
+        return Err(anyhow!("HTTP request body exceeds 1 MiB"));
+    }
+
+    let body_start = header_end + 4;
+    let mut body = buf[body_start..].to_vec();
+    while body.len() < content_len {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(content_len);
+    Ok((method, path, body))
+}
+
+fn extract_ur_res_from_body(raw_body: &str) -> Result<String> {
+    let trimmed = raw_body.trim();
+    if trimmed.to_ascii_lowercase().starts_with("ur:lavault-res/") {
+        return Ok(trimmed.to_string());
+    }
+    if let Some(idx) = trimmed.to_ascii_lowercase().find("ur:lavault-res/") {
+        let slice = &trimmed[idx..];
+        let end = slice
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}')
+            .unwrap_or(slice.len());
+        return Ok(slice[..end].to_string());
+    }
+    Err(anyhow!("request body does not contain ur:lavault-res/..."))
+}
+
+pub async fn serve_lan_unlock_once(
+    listener: TcpListener,
+    challenge: UnlockChallenge,
+    pc_ephem: EphemeralResponseSecret,
+    target_file: String,
+    expected_responder_vk: Option<VerifyingKey>,
+) -> Result<LanUnlockOutcome> {
+    let ur_req = challenge.to_bcur()?;
+    let pending_json = format!(
+        r#"{{"req_id":"{}","requester_name":"{}","target_file":"{}","slot_id":"{}","ur_req":"{}"}}"#,
+        json_escape(&challenge.req_id),
+        json_escape(&challenge.requester_name),
+        json_escape(&target_file),
+        json_escape(&challenge.slot_id),
+        json_escape(&ur_req),
+    );
+
+    loop {
+        let (mut stream, peer_addr) = listener.accept().await?;
+        let (method, path, body) = match read_http_request(&mut stream).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match (method.as_str(), path.as_str()) {
+            ("GET", "/pending") => {
+                println!("[Wi-Fi LAN] Phone connected from {peer_addr} -> sent challenge for '{target_file}'");
+                let _ = send_http_json(&mut stream, "200 OK", &pending_json).await;
+            }
+            ("POST", "/respond") => {
+                let body_str = String::from_utf8_lossy(&body);
+                match extract_ur_res_from_body(&body_str)
+                    .and_then(|ur| Ok(UnlockResponse::from_bcur(&ur)?))
+                    .and_then(|resp| {
+                        let dek = verify_and_extract_unlock_dek_optional_vk(
+                            &resp,
+                            &pc_ephem,
+                            expected_responder_vk.as_ref(),
+                        )?;
+                        Ok((dek, resp.responder_id))
+                    }) {
+                    Ok((dek, responder_id)) => {
+                        let _ = send_http_json(&mut stream, "200 OK", r#"{"status":"unlocked"}"#).await;
+                        return Ok(LanUnlockOutcome { dek, responder_id });
+                    }
+                    Err(e) => {
+                        let err_json = format!(r#"{{"error":"{}"}}"#, json_escape(&e.to_string()));
+                        let _ = send_http_json(&mut stream, "400 Bad Request", &err_json).await;
+                    }
+                }
+            }
+            ("POST", "/deny") => {
+                let _ = send_http_json(&mut stream, "200 OK", r#"{"status":"denied"}"#).await;
+                return Err(anyhow!("Unlock request denied by phone ({peer_addr})"));
+            }
+            _ => {
+                let _ = send_http_json(&mut stream, "404 Not Found", r#"{"error":"not found"}"#).await;
+            }
+        }
+    }
+}
+
+pub fn run_lan_unlock_blocking(
+    port: u16,
+    challenge: UnlockChallenge,
+    pc_ephem: EphemeralResponseSecret,
+    target_file: String,
+    html_out: &Path,
+) -> Result<LanUnlockOutcome> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async move {
+        let listener = TcpListener::bind(("0.0.0.0", port)).await.map_err(|e| {
+            anyhow!("failed to bind Wi-Fi unlock listener on 0.0.0.0:{port}: {e}")
+        })?;
+        let local_port = listener.local_addr()?.port();
+        let lan_ip = detect_lan_ipv4();
+        let wifi_url = format!("http://{lan_ip}:{local_port}");
+        let ur_req = challenge.to_bcur()?;
+        let verifier = encode_8word_verifier(&challenge.challenge_nonce);
+
+        write_unlock_qr_html(&ur_req, &verifier, &target_file, Some(&wifi_url), html_out)?;
+
+        println!("=== LaVault 1-Tap Local Wi-Fi Unlocker ===");
+        println!("Target file      : {target_file}");
+        println!("PC Wi-Fi Address : {lan_ip}:{local_port}");
+        println!("Helper QR page   : {}", html_out.display());
+        println!("(On Phone -> Unlocker tab: tap 'Scan Wi-Fi / QR' below OR enter {lan_ip}:{local_port} and tap 'Check PC' -> 'Approve Unlock')");
+        let wifi_qr = format!("lavault-wifi://{wifi_url}");
+        if let Ok(term) = render_terminal_qr(&wifi_qr) {
+            println!("{term}");
+        }
+        println!("Waiting for phone approval on http://{lan_ip}:{local_port} ...");
+
+        serve_lan_unlock_once(listener, challenge, pc_ephem, target_file, None).await
+    })
 }

@@ -161,9 +161,26 @@ class _PeersGuardiansTabState extends State<PeersGuardiansTab> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    '1. Paper Backup (24-Word BIP-0039 Mnemonic)',
-                    style: Theme.of(context).textTheme.titleSmall,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '1. Paper Backup (24-Word BIP-0039 Mnemonic)',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: const Key('copy_bip39_btn'),
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: kit.bip3924Words));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Copied 24-word BIP-39 phrase')),
+                          );
+                        },
+                        icon: const Icon(Icons.copy, size: 16),
+                        label: const Text('Copy'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   SelectableText(
@@ -171,9 +188,29 @@ class _PeersGuardiansTabState extends State<PeersGuardiansTab> {
                     style: const TextStyle(fontFamily: 'monospace'),
                   ),
                   const Divider(),
-                  Text(
-                    '2. Encrypted Recovery Keyfile (.rkf)',
-                    style: Theme.of(context).textTheme.titleSmall,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '2. Encrypted Recovery Keyfile (.rkf)',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: const Key('copy_rkf_hex_btn'),
+                        onPressed: () {
+                          final rkfHex = kit.rkfBytes
+                              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                              .join();
+                          Clipboard.setData(ClipboardData(text: rkfHex));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Copied .rkf hex keyfile')),
+                          );
+                        },
+                        icon: const Icon(Icons.copy, size: 16),
+                        label: const Text('Copy Hex'),
+                      ),
+                    ],
                   ),
                   Text('Size: ${kit.rkfBytes.length} bytes (Argon2id + XChaCha20-Poly1305)'),
                   const Divider(),
@@ -212,6 +249,19 @@ class _PeersGuardiansTabState extends State<PeersGuardiansTab> {
                                 ),
                               ],
                             ),
+                          ),
+                          IconButton(
+                            key: Key('copy_guardian_${g.shareIndex}'),
+                            icon: const Icon(Icons.copy, size: 18),
+                            tooltip: 'Copy Share URI',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: g.slip39Uri));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Copied ${g.guardianId} share URI'),
+                                ),
+                              );
+                            },
                           ),
                         ],
                       ),

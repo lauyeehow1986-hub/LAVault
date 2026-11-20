@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -220,8 +221,11 @@ void main() {
     await tester.tap(find.byKey(const Key('generate_recovery_btn')));
     await tester.pumpAndSettle();
     expect(find.textContaining('abandon abandon'), findsOneWidget);
+    expect(find.byKey(const Key('copy_bip39_btn')), findsOneWidget);
+    expect(find.byKey(const Key('copy_rkf_hex_btn')), findsOneWidget);
     await tester.ensureVisible(find.textContaining('guardian_alice (Share 1/3'));
     expect(find.textContaining('guardian_alice (Share 1/3'), findsOneWidget);
+    expect(find.byKey(const Key('copy_guardian_1')), findsOneWidget);
 
     // Lock session
     await tester.tap(find.byKey(const Key('lock_vault_btn')));
@@ -292,4 +296,55 @@ void main() {
       );
     });
   });
+
+  test('live Wi-Fi unlock fetches /pending and POSTs ur:lavault-res to /respond',
+      () async {
+    await HttpOverrides.runWithHttpOverrides(() async {
+      String? receivedResponseBody;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+
+      server.listen((HttpRequest req) async {
+        if (req.method == 'GET' && req.uri.path == '/pending') {
+          req.response.headers.contentType = ContentType.json;
+          req.response.write(
+            jsonEncode({
+              'req_id': 'req_wifi_live_99',
+              'requester_name': 'LaVault-PC',
+              'target_file': 'notes.txt.vlt',
+              'slot_id': 'phone',
+              'ur_req': 'ur:lavault-req/abc',
+            }),
+          );
+        } else if (req.method == 'POST' && req.uri.path == '/respond') {
+          receivedResponseBody = await utf8.decodeStream(req);
+          req.response.headers.contentType = ContentType.json;
+          req.response.write('{"status":"unlocked"}');
+        } else {
+          req.response.statusCode = HttpStatus.notFound;
+        }
+        await req.response.close();
+      });
+
+      final controller = VaultController(
+        api: FakeBackendApi(),
+        keystore: FakeKeystore(),
+        dbPathOverride: 'test_wifi_vault.db',
+      );
+      await controller.unlockWithMasterPassword('LaVault-Master-2026');
+
+      final ok = await controller.fetchPendingWifiUnlock(
+        'lavault-wifi://http://127.0.0.1:${server.port}',
+      );
+      expect(ok, isTrue);
+      expect(controller.unlockQueue.first.id, 'req_wifi_live_99');
+
+      await controller.respondToQueueItem('req_wifi_live_99', true);
+      expect(receivedResponseBody, 'ur:lavault-res/hihihihi');
+      expect(controller.unlockQueue.first.status, 'Approved (Sent to PC)');
+      controller.dispose();
+    }, _DirectHttpOverrides());
+  });
 }
+
+class _DirectHttpOverrides extends HttpOverrides {}

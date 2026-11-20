@@ -840,6 +840,14 @@ pub fn encrypt_directory_to_vlt(
     Ok(())
 }
 
+fn unpack_zstd_tar(compressed: &[u8], dest_dir: &Path) -> Result<()> {
+    let tar_bytes = zstd::stream::decode_all(compressed)?;
+    std::fs::create_dir_all(dest_dir)?;
+    let mut archive = tar::Archive::new(tar_bytes.as_slice());
+    archive.unpack(dest_dir)?;
+    Ok(())
+}
+
 pub fn decrypt_directory_from_vlt(
     src_vlt: &Path,
     dest_dir: &Path,
@@ -848,9 +856,15 @@ pub fn decrypt_directory_from_vlt(
 ) -> Result<()> {
     let vlt_bytes = std::fs::read(src_vlt)?;
     let compressed = decrypt_bytes_with_direct_slot(&vlt_bytes, recipient_id, recipient_keys)?;
-    let tar_bytes = zstd::stream::decode_all(compressed.as_slice())?;
-    std::fs::create_dir_all(dest_dir)?;
-    let mut archive = tar::Archive::new(tar_bytes.as_slice());
-    archive.unpack(dest_dir)?;
-    Ok(())
+    unpack_zstd_tar(&compressed, dest_dir)
+}
+
+pub fn decrypt_directory_from_vlt_with_dek(
+    src_vlt: &Path,
+    dest_dir: &Path,
+    dek: &DataEncryptionKey,
+) -> Result<()> {
+    let vlt_bytes = std::fs::read(src_vlt)?;
+    let compressed = decrypt_bytes_with_dek(&vlt_bytes, dek)?;
+    unpack_zstd_tar(&compressed, dest_dir)
 }
