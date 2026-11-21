@@ -171,7 +171,19 @@ class _UnlockerTabState extends State<UnlockerTab> {
                   const SizedBox(height: 8),
                   Text(
                     widget.controller.wifiStatus!,
-                    style: const TextStyle(fontSize: 12),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: widget.controller.wifiStatus!
+                                  .toLowerCase()
+                                  .contains('error') ||
+                              widget.controller.wifiStatus!
+                                  .toLowerCase()
+                                  .contains('rejected')
+                          ? Colors.redAccent
+                          : widget.controller.wifiStatus!.contains('Approved')
+                              ? Colors.greenAccent
+                              : null,
+                    ),
                   ),
                 ],
               ],

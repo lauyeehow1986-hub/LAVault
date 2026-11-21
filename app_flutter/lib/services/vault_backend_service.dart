@@ -611,11 +611,13 @@ class VaultController extends ChangeNotifier {
             sessionId: session!.sessionId,
             urReq: item.urRequestPayload!,
           );
+          final bodyBytes = utf8.encode(urRes);
           final httpReq = await client.postUrl(
             Uri.parse('${item.callbackUrl}/respond'),
           );
           httpReq.headers.contentType = ContentType.text;
-          httpReq.write(urRes);
+          httpReq.contentLength = bodyBytes.length;
+          httpReq.add(bodyBytes);
           final httpRes = await httpReq.close();
           final body = await utf8.decodeStream(httpRes);
           if (httpRes.statusCode != 200) {
@@ -630,6 +632,7 @@ class VaultController extends ChangeNotifier {
           final httpReq = await client.postUrl(
             Uri.parse('${item.callbackUrl}/deny'),
           );
+          httpReq.contentLength = 0;
           await httpReq.close();
           item.status = 'Denied';
           wifiStatus = 'Unlock request denied';

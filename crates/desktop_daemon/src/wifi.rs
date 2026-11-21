@@ -310,29 +310,81 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<(String, String, Ve
     let raw_path = parts.next().unwrap_or("/");
     let path = raw_path.split('?').next().unwrap_or("/").to_string();
 
-    let mut content_len: usize = 0;
+    let mut content_len: Option<usize> = None;
+    let mut is_chunked = false;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                content_len = v.trim().parse().unwrap_or(0);
+            let key = k.trim();
+            if key.eq_ignore_ascii_case("content-length") {
+                content_len = v.trim().parse().ok();
+            } else if key.eq_ignore_ascii_case("transfer-encoding")
+                && v.to_ascii_lowercase().contains("chunked")
+            {
+                is_chunked = true;
             }
         }
     }
-    if content_len > 1024 * 1024 {
-        return Err(anyhow!("HTTP request body exceeds 1 MiB"));
-    }
 
     let body_start = header_end + 4;
-    let mut body = buf[body_start..].to_vec();
-    while body.len() < content_len {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
+    if is_chunked {
+        let mut cursor = body_start;
+        let mut decoded = Vec::new();
+        loop {
+            let line_rel = loop {
+                if let Some(pos) = buf[cursor..].windows(2).position(|w| w == b"\r\n") {
+                    break pos;
+                }
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    return Err(anyhow!("unexpected EOF reading chunked size line"));
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 2 * 1024 * 1024 {
+                    return Err(anyhow!("chunked HTTP body exceeds limit"));
+                }
+            };
+            let size_line = std::str::from_utf8(&buf[cursor..cursor + line_rel])
+                .map_err(|_| anyhow!("invalid UTF-8 in chunk size"))?;
+            let size_hex = size_line.split(';').next().unwrap_or("").trim();
+            let chunk_size = usize::from_str_radix(size_hex, 16)
+                .map_err(|_| anyhow!("invalid chunk size '{size_hex}'"))?;
+            cursor += line_rel + 2;
+            if chunk_size == 0 {
+                break;
+            }
+            if decoded.len().saturating_add(chunk_size) > 1024 * 1024 {
+                return Err(anyhow!("HTTP request body exceeds 1 MiB"));
+            }
+            while buf.len() < cursor + chunk_size + 2 {
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    return Err(anyhow!("unexpected EOF reading chunked payload"));
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            decoded.extend_from_slice(&buf[cursor..cursor + chunk_size]);
+            cursor += chunk_size + 2;
         }
-        body.extend_from_slice(&tmp[..n]);
+        return Ok((method, path, decoded));
     }
-    body.truncate(content_len);
-    Ok((method, path, body))
+
+    if let Some(len) = content_len {
+        if len > 1024 * 1024 {
+            return Err(anyhow!("HTTP request body exceeds 1 MiB"));
+        }
+        let mut body = buf[body_start..].to_vec();
+        while body.len() < len {
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
+        }
+        body.truncate(len);
+        return Ok((method, path, body));
+    }
+
+    Ok((method, path, buf[body_start..].to_vec()))
 }
 
 fn extract_ur_res_from_body(raw_body: &str) -> Result<String> {
@@ -396,6 +448,7 @@ pub async fn serve_lan_unlock_once(
                         return Ok(LanUnlockOutcome { dek, responder_id });
                     }
                     Err(e) => {
+                        eprintln!("[Wi-Fi LAN] Rejected response from {peer_addr}: {e}");
                         let err_json = format!(r#"{{"error":"{}"}}"#, json_escape(&e.to_string()));
                         let _ = send_http_json(&mut stream, "400 Bad Request", &err_json).await;
                     }

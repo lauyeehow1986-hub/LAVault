@@ -414,3 +414,90 @@ fn cli_verify_recovery_bip39_rkf_and_shamir_shares() {
     })
     .expect("2-of-3 Shamir shares verify-recovery");
 }
+
+#[tokio::test]
+async fn lan_wifi_unlock_server_handles_http11_chunked_transfer_encoding() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    let owner_keys = make_keys(11);
+    let phone_keys = make_keys(22);
+    let plaintext = b"Chunked Transfer-Encoding LAN unlock payload";
+    let vlt = vault_core::vlt::encrypt_bytes_to_vlt(
+        plaintext,
+        &owner_keys,
+        &vault_core::vlt::VltOptions {
+            cipher: vault_core::vlt::PayloadCipher::ChaCha20Poly1305,
+            wrap_method: vault_core::vlt::DirectWrapMethod::Aes256Kw,
+            direct_recipients: vec![("phone".into(), phone_keys.x25519_public_bytes())],
+            quorum_members: vec![],
+            quorum_threshold_k: 0,
+        },
+    )
+    .unwrap();
+
+    let (challenge, ephem) =
+        vault_core::transport::build_unlock_challenge_for_vlt(&vlt, "phone", "PC-WiFi").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let phone_vk = phone_keys.ed25519_verifying();
+
+    let server_task = tokio::spawn(async move {
+        desktop_daemon::wifi::serve_lan_unlock_once(
+            listener,
+            challenge,
+            ephem,
+            "chunked.txt.vlt".into(),
+            Some(phone_vk),
+        )
+        .await
+    });
+
+    let mut s1 = TcpStream::connect(addr).await.unwrap();
+    s1.write_all(b"GET /pending HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp1 = String::new();
+    s1.read_to_string(&mut resp1).await.unwrap();
+    let ur_marker = "\"ur_req\":\"";
+    let start = resp1.find(ur_marker).unwrap() + ur_marker.len();
+    let end = start + resp1[start..].find('"').unwrap();
+    let ur_req = &resp1[start..end];
+
+    let parsed = vault_core::transport::UnlockChallenge::from_bcur(ur_req).unwrap();
+    let ur_res = vault_core::transport::fulfill_unlock_challenge(&parsed, "phone", &phone_keys)
+        .unwrap()
+        .to_bcur()
+        .unwrap();
+
+    let mid = ur_res.len() / 2;
+    let part1 = &ur_res[..mid];
+    let part2 = &ur_res[mid..];
+    let chunked_body = format!(
+        "{:x}\r\n{}\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+        part1.len(),
+        part1,
+        part2.len(),
+        part2
+    );
+
+    let mut s2 = TcpStream::connect(addr).await.unwrap();
+    let req_headers = "POST /respond HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    s2.write_all(req_headers.as_bytes()).await.unwrap();
+    // Send across separate writes to simulate partial chunked TCP delivery like Dart HttpClient
+    s2.write_all(&chunked_body.as_bytes()[..mid + 8]).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    s2.write_all(&chunked_body.as_bytes()[mid + 8..]).await.unwrap();
+
+    let mut resp2 = String::new();
+    s2.read_to_string(&mut resp2).await.unwrap();
+    assert!(
+        resp2.starts_with("HTTP/1.1 200 OK") && resp2.contains("unlocked"),
+        "expected 200 unlocked for chunked POST /respond, got: {resp2}"
+    );
+
+    let outcome = server_task.await.unwrap().expect("lan unlock outcome");
+    let decrypted = vault_core::vlt::decrypt_bytes_with_dek(&vlt, &outcome.dek).unwrap();
+    assert_eq!(decrypted, plaintext);
+}
