@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LaVault — Zero-Cloud Local Authenticator, TOTP Vault &amp; Multi-User Unlocker</title>
+  <style>
+    :root {
+      --bg: #070d19;
+      --surface: #0f172a;
+      --card: #162238;
+      --card-hover: #1b2a45;
+      --border: #26354d;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --teal: #14b8a6;
+      --teal-soft: rgba(20, 184, 166, 0.14);
+      --sky: #38bdf8;
+      --green: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: radial-gradient(circle at top center, #0e1d34 0%, var(--bg) 52%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    a { color: var(--teal); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .container { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+
+    /* Nav */
+    header {
+      position: sticky; top: 0; z-index: 40;
+      background: rgba(7, 13, 25, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; padding: 14px 0; flex-wrap: wrap;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 800; font-size: 1.15rem; color: var(--text);
+    }
+    .brand-mark {
+      width: 32px; height: 32px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--teal), var(--sky));
+      display: grid; place-items: center; color: #042f2e; font-weight: 900;
+    }
+    .nav-links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.92rem; }
+    .nav-links a { color: var(--muted); font-weight: 600; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* Hero */
+    .hero { padding: 54px 0 36px; text-align: center; }
+    .badges {
+      display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+    }
+    .badge {
+      padding: 5px 12px; border-radius: 999px; font-size: 0.78rem; font-weight: 700;
+      background: var(--teal-soft); border: 1px solid rgba(20, 184, 166, 0.35); color: #5eead4;
+      letter-spacing: 0.02em;
+    }
+    h1 {
+      font-size: clamp(2rem, 4.2vw, 3.25rem); line-height: 1.12; margin: 0 0 14px;
+      letter-spacing: -0.02em;
+    }
+    .hero p {
+      max-width: 760px; margin: 0 auto 28px; color: var(--muted); font-size: 1.08rem;
+    }
+    .cta-row {
+      display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.92rem;
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    }
+    .btn:hover { transform: translateY(-1px); background: var(--card); text-decoration: none; border-color: #3b5276; }
+    .btn-primary {
+      background: linear-gradient(135deg, #0d9488, #14b8a6);
+      color: #042f2e; border-color: transparent;
+    }
+    .btn-primary:hover { background: linear-gradient(135deg, #14b8a6, #2dd4bf); color: #042f2e; }
+
+    /* Stats */
+    .stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px; margin: 26px 0 42px;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px 18px; text-align: left;
+    }
+    .stat-val { font-size: 1.45rem; font-weight: 800; color: var(--green); }
+    .stat-lbl { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
+
+    /* Sections */
+    section { padding: 36px 0; }
+    h2 { font-size: 1.7rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+    .section-sub { color: var(--muted); margin: 0 0 22px; }
+
+    /* Interactive Tabs */
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+    .tab-btn {
+      cursor: pointer; border: 1px solid var(--border); background: var(--surface);
+      color: var(--muted); padding: 9px 15px; border-radius: 10px;
+      font-weight: 700; font-size: 0.88rem;
+    }
+    .tab-btn.active {
+      background: var(--teal-soft); color: #5eead4; border-color: var(--teal);
+    }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .feature-split {
+      display: grid; grid-template-columns: minmax(280px, 1.05fr) minmax(300px, 1.35fr);
+      gap: 22px; align-items: start;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 22px;
+    }
+    @media (max-width: 860px) {
+      .feature-split { grid-template-columns: 1fr; }
+    }
+    .shot-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px;
+    }
+    .shot-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .shot-card img {
+      width: 100%; border-radius: 10px; border: 1px solid #26354d;
+      cursor: zoom-in; background: #070d19; object-fit: contain; max-height: 460px;
+    }
+    .shot-caption { font-size: 0.85rem; color: var(--muted); }
+    .shot-caption strong { color: var(--text); display: block; margin-bottom: 2px; }
+
+    .steps-list { margin: 14px 0 0; padding-left: 20px; color: var(--muted); }
+    .steps-list li { margin-bottom: 8px; }
+    .steps-list code {
+      background: #0b1322; color: var(--sky); padding: 2px 6px; border-radius: 6px;
+      font-family: Consolas, ui-monospace, monospace; font-size: 0.86em;
+    }
+
+    /* Code blocks */
+    .cmd-group { display: grid; gap: 16px; }
+    .cmd-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    }
+    .cmd-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border);
+      font-weight: 700; font-size: 0.92rem;
+    }
+    .copy-btn {
+      cursor: pointer; background: var(--teal-soft); color: #5eead4;
+      border: 1px solid rgba(20, 184, 166, 0.4); border-radius: 7px;
+      padding: 4px 10px; font-size: 0.8rem; font-weight: 700;
+    }
+    .copy-btn:hover { background: rgba(20, 184, 166, 0.28); }
+    pre.code {
+      margin: 0; padding: 14px 16px; overflow-x: auto;
+      font-family: Consolas, ui-monospace, monospace; font-size: 0.86rem; color: #e2e8f0;
+    }
+
+    /* Crypto Table */
+    .table-wrap {
+      overflow-x: auto; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 14px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: var(--card); color: #5eead4; font-weight: 700; }
+    tr:last-child td { border-bottom: none; }
+    td code {
+      background: #0b1322; color: var(--sky); padding: 2px 6px; border-radius: 6px;
+      font-family: Consolas, ui-monospace, monospace; font-size: 0.84em;
+    }
+
+    /* Lightbox */
+    .lightbox {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: rgba(3, 7, 15, 0.9); align-items: center; justify-content: center; padding: 24px;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img {
+      max-width: 95vw; max-height: 92vh; border-radius: 12px;
+      border: 1px solid var(--border); box-shadow: 0 24px 80px rgba(0,0,0,0.8);
+    }
+
+    footer {
+      border-top: 1px solid var(--border); margin-top: 44px; padding: 28px 0 40px;
+      color: var(--muted); font-size: 0.88rem; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <div class="brand">
+        <div class="brand-mark">LV</div>
+        <span>LaVault</span>
+      </div>
+      <nav class="nav-links">
+        <a href="#walkthrough">Screenshots</a>
+        <a href="#quickstart">Step-by-Step</a>
+        <a href="#crypto">Cryptography</a>
+        <a href="https://github.com/lauyeehow1986-hub/LAVault/releases/latest">Releases</a>
+        <a href="https://github.com/lauyeehow1986-hub/LAVault">GitHub Repo</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div class="badges">
+        <span class="badge">Zero-Cloud &amp; Local-First</span>
+        <span class="badge">Rust Core + Flutter UI</span>
+        <span class="badge">X25519 + Ed25519 + Shamir GF(256)</span>
+        <span class="badge">RFC 6238 TOTP &amp; bc-ur QR</span>
+      </div>
+      <h1>Your Phone Is Your Hardware Key &amp; Vault</h1>
+      <p>
+        Store passwords and live 2FA codes behind device biometrics, lock PC files &amp; folders into
+        tamper-evident <code>.vlt</code> containers, unlock over 1-tap LAN Wi-Fi or air-gapped QR codes,
+        and recover anytime with Triple Recovery.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/lauyeehow1986-hub/LAVault/releases/latest">
+          Download Android APK &amp; Desktop (Latest Release)
+        </a>
+        <a class="btn" href="#quickstart">Read Step-by-Step Guide</a>
+        <a class="btn" href="https://github.com/lauyeehow1986-hub/LAVault">View Source on GitHub</a>
+      </div>
+
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-val">1.79M ops/s</div>
+          <div class="stat-lbl">10k RFC 6238 TOTP generations verified in 5.6 ms</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">2,268 rounds/s</div>
+          <div class="stat-lbl">50 .vlt + bc-ur fountain + QR unlock cycles in 22.0 ms</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">41 Rust + 6 Flutter</div>
+          <div class="stat-lbl">Automated cryptographic &amp; FFI UI integration tests</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val">3 Backup Layers</div>
+          <div class="stat-lbl">24-Word BIP-39, Argon2id .rkf keyfile &amp; 2-of-3 Guardian QRs</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="walkthrough">
+      <h2>Feature Walkthrough &amp; Real Screenshots</h2>
+      <p class="section-sub">Click any screenshot tab below or click an image to zoom in. All captures use synthetic demo keys and secrets.</p>
+
+      <div class="tabs" role="tablist">
+        <button class="tab-btn active" onclick="showTab('all', this)">All Features (Gallery)</button>
+        <button class="tab-btn" onclick="showTab('vault', this)">1. Biometric Lock &amp; TOTP Vault</button>
+        <button class="tab-btn" onclick="showTab('wifi', this)">2. 1-Tap LAN Wi-Fi Unlocker</button>
+        <button class="tab-btn" onclick="showTab('qr', this)">3. Air-Gapped Optical QR</button>
+        <button class="tab-btn" onclick="showTab('recovery', this)">4. Triple Recovery &amp; CLI</button>
+      </div>
+
+      <div id="tab-all" class="panel active">
+        <div class="shot-grid">
+          <div class="shot-card">
+            <img src="screenshots/01_lock_screen.png" alt="LaVault Biometric Lock Screen" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>Biometric &amp; Keystore Lock</strong>Argon2id + AndroidKeyStore wrapping keeps your persistent device identity key sealed at rest.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/02_vault_totp.png" alt="Vault + Live TOTP Tab" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>Password + Live TOTP Vault</strong>6/7/8-digit RFC 6238 codes with live 30-second countdown rings, 1-tap copy, search, and delete.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/03_unlocker_wifi_1tap.png" alt="1-Tap Wi-Fi Unlocker" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>1-Tap Local Wi-Fi Unlocker</strong>Scan a small LAN code or tap Check PC, then tap Approve Unlock &mdash; zero copy-pasting.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/04_unlocker_qr_signed.png" alt="Air-Gapped QR Response" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>Air-Gapped Optical QR</strong>Decode offline <code>ur:lavault-req</code> challenges and generate signed <code>ur:lavault-res</code> QR responses.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/05_peers_triple_recovery.png" alt="Triple Recovery Tab" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>Triple Recovery Kit</strong>Export 24-word BIP-39, encrypted <code>.rkf</code>, and M-of-N Shamir Guardian QR capsules in 1 tap.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/06_pc_wifi_qr_helper.png" alt="PC Helper QR Sheet" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>PC Browser Helper Page</strong>Auto-generated <code>unlock_qr.html</code> presents both the Wi-Fi quick QR and optical fallback QR.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/07_totp_parity_sheet.png" alt="TOTP Parity QR Sheet" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>3-Way TOTP Parity Sheet</strong>Cross-verify codes across LaVault Mobile, Windows CLI, and Google/Microsoft Authenticator.</div>
+          </div>
+          <div class="shot-card">
+            <img src="screenshots/08_cli_workflow_terminal.png" alt="PowerShell CLI Walkthrough" onclick="zoom(this)" />
+            <div class="shot-caption"><strong>PowerShell CLI Workflow</strong>Encrypt files, approve over LAN Wi-Fi, verify recovery keys, and stress-test 10k TOTPs.</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-vault" class="panel">
+        <div class="feature-split">
+          <div>
+            <h3>Biometric Lock, Password Vault &amp; 3-Way TOTP Sync</h3>
+            <p class="section-sub">Your master identity seed stays sealed inside SQLite (<code>vault_meta:master_seed</code>) keyed with Argon2id + hardware keystore secret so your phone key never changes across restarts.</p>
+            <ol class="steps-list">
+              <li>Unlock LaVault with Fingerprint / Biometrics + Master PIN.</li>
+              <li>View stored entries or tap <strong>Add</strong> to add a service with a Base32 TOTP secret (SHA-1/256/512, 6/7/8 digits).</li>
+              <li>Tap the lock icon on any card to reveal password + live countdown TOTP code; copy or delete anytime.</li>
+              <li>Run <code>lavault.exe stress --live-totp-secs 120 --qr-html-out stress_qr.html</code> on PC to confirm 3-way parity with external authenticators.</li>
+            </ol>
+          </div>
+          <div class="shot-grid">
+            <div class="shot-card">
+              <img src="screenshots/01_lock_screen.png" alt="Lock Screen" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Lock Screen</strong>Biometric + Hardware Keystore gate.</div>
+            </div>
+            <div class="shot-card">
+              <img src="screenshots/02_vault_totp.png" alt="Vault + TOTP" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Vault + TOTP</strong>Live 6/8-digit codes with countdown indicators.</div>
+            </div>
+            <div class="shot-card">
+              <img src="screenshots/07_totp_parity_sheet.png" alt="TOTP Parity Sheet" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>3-Way Parity Sheet</strong>Scan into external authenticators to compare live codes.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-wifi" class="panel">
+        <div class="feature-split">
+          <div>
+            <h3>Seamless 1-Tap Local Wi-Fi File &amp; Folder Unlocker</h3>
+            <p class="section-sub">Your encrypted container (<code>.vlt</code> / <code>.dir.vlt</code>) stays on your PC while your phone acts as an offline hardware decryptor over local Wi-Fi.</p>
+            <ol class="steps-list">
+              <li>Copy your phone's permanent X25519 public key from <strong>Peers &rarr; this_device</strong>.</li>
+              <li>Lock any PC file or directory with <code>lavault.exe lock ... --recipients phone:&lt;HEX&gt;</code>.</li>
+              <li>Run <code>lavault.exe unlock file.vlt --slot phone --wifi</code>; PowerShell prints your LAN address + tiny QR and opens <code>unlock_qr.html</code>.</li>
+              <li>On Android <strong>Unlocker</strong>, tap <strong>Scan Wi-Fi / QR</strong> (or tap <strong>Check PC</strong>), then tap <strong>Approve Unlock</strong> &mdash; PC decrypts instantly.</li>
+            </ol>
+          </div>
+          <div class="shot-grid">
+            <div class="shot-card">
+              <img src="screenshots/03_unlocker_wifi_1tap.png" alt="1-Tap Wi-Fi Approval" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Phone Queue Card</strong>1-tap <code>Approve Unlock</code> sends signed response automatically.</div>
+            </div>
+            <div class="shot-card">
+              <img src="screenshots/06_pc_wifi_qr_helper.png" alt="PC Wi-Fi Helper QR" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>PC Helper Sheet</strong>Shows both the Wi-Fi quick QR and optical fallback QR.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-qr" class="panel">
+        <div class="feature-split">
+          <div>
+            <h3>Air-Gapped Optical QR Challenge &amp; Response</h3>
+            <p class="section-sub">Even with Wi-Fi and Bluetooth completely turned off, you can decrypt files across an optical air gap using compact <code>bc-ur</code> bytewords QR codes.</p>
+            <ol class="steps-list">
+              <li>Run <code>lavault.exe unlock file.vlt --slot phone</code> (without <code>--wifi</code>).</li>
+              <li>On Android <strong>Unlocker</strong>, tap <strong>Scan Camera QR</strong> and point at the terminal or <code>unlock_qr.html</code>.</li>
+              <li>LaVault unwraps the DEK inside Rust FFI and shows the green <strong>Signed Response Ready (ur:lavault-res)</strong> card.</li>
+              <li>Tap <strong>Copy Response</strong> and paste back to PowerShell to verify &amp; decrypt.</li>
+            </ol>
+          </div>
+          <div class="shot-grid">
+            <div class="shot-card">
+              <img src="screenshots/04_unlocker_qr_signed.png" alt="Signed QR Response" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Signed Response Card</strong>Prominent <code>ur:lavault-res</code> QR + 1-tap <strong>Copy Response</strong> button.</div>
+            </div>
+            <div class="shot-card">
+              <img src="screenshots/06_pc_wifi_qr_helper.png" alt="Optical Challenge QR" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Optical Request QR</strong>Includes 8-word verification phrase for human confirmation.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-recovery" class="panel">
+        <div class="feature-split">
+          <div>
+            <h3>Triple Recovery Verification (BIP-39, .rkf &amp; 2-of-3 Guardians)</h3>
+            <p class="section-sub">Never lose access if your phone is lost or wiped. Verify every backup layer cryptographically against your active device key.</p>
+            <ol class="steps-list">
+              <li>Open <strong>Peers</strong> on Android and tap <strong>Generate Triple Recovery Kit</strong>.</li>
+              <li>Copy your <strong>24-word BIP-39 phrase</strong>, <strong>.rkf hex</strong>, or any <strong>2 of 3 Guardian QR share URIs</strong>.</li>
+              <li>Run <code>lavault.exe verify-recovery</code> on PC with <code>--expected-x25519 &lt;PHONE_HEX&gt;</code>.</li>
+              <li>Confirm CLI prints <code>MATCH: Recovered X25519 key matches phone this_device 100%!</code></li>
+            </ol>
+          </div>
+          <div class="shot-grid">
+            <div class="shot-card">
+              <img src="screenshots/05_peers_triple_recovery.png" alt="Peers & Triple Recovery" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>Mobile Recovery Kit</strong>1-tap copy buttons for BIP-39, <code>.rkf</code>, and Guardian QRs.</div>
+            </div>
+            <div class="shot-card">
+              <img src="screenshots/08_cli_workflow_terminal.png" alt="CLI Recovery Match" onclick="zoom(this)" />
+              <div class="shot-caption"><strong>PC CLI Verification</strong>Proves backups reproduce the exact phone X25519 identity key.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="quickstart">
+      <h2>Copy-Paste Step-by-Step Guide</h2>
+      <p class="section-sub">Run these commands on Windows PowerShell after downloading the Windows release ZIP and Android APK.</p>
+
+      <div class="cmd-group">
+        <div class="cmd-card">
+          <div class="cmd-head">
+            <span>1. Lock a File or Folder for Your Phone</span>
+            <button class="copy-btn" onclick="copyCmd('cmd1', this)">Copy</button>
+          </div>
+          <pre class="code" id="cmd1"># Lock a single file (copy your phone X25519 hex from Peers -&gt; this_device)
+.\lavault.exe lock my_secrets.txt --recipients phone:&lt;PHONE_X25519_HEX&gt;
+
+# Or lock an entire folder into a compressed .dir.vlt container
+.\lavault.exe lock .\my_folder --output my_folder.dir.vlt --recipients phone:&lt;PHONE_X25519_HEX&gt;</pre>
+        </div>
+
+        <div class="cmd-card">
+          <div class="cmd-head">
+            <span>2. Unlock via 1-Tap Local Wi-Fi (or Offline Optical QR)</span>
+            <button class="copy-btn" onclick="copyCmd('cmd2', this)">Copy</button>
+          </div>
+          <pre class="code" id="cmd2"># Option A: 1-Tap Wi-Fi LAN unlock (tap Scan Wi-Fi / QR -&gt; Approve Unlock on phone)
+.\lavault.exe unlock my_secrets.txt.vlt --slot phone --wifi --output restored_secrets.txt
+
+# Option B: Air-gapped QR unlock (file or folder)
+.\lavault.exe unlock my_folder.dir.vlt --slot phone --dir --output .\restored_folder</pre>
+        </div>
+
+        <div class="cmd-card">
+          <div class="cmd-head">
+            <span>3. Verify All 3 Recovery Backups Against Your Phone</span>
+            <button class="copy-btn" onclick="copyCmd('cmd3', this)">Copy</button>
+          </div>
+          <pre class="code" id="cmd3"># 3a. 24-Word BIP-39 Paper Backup
+.\lavault.exe verify-recovery --bip39 "word1 word2 ... word24" --expected-x25519 &lt;PHONE_X25519_HEX&gt;
+
+# 3b. Encrypted Argon2id .rkf Keyfile Hex
+.\lavault.exe verify-recovery --rkf-hex &lt;RKF_HEX&gt; --rkf-pass "Recovery-Keyfile-Pass#2026" --expected-x25519 &lt;PHONE_X25519_HEX&gt;
+
+# 3c. Any 2 of 3 Shamir Guardian Share URIs
+.\lavault.exe verify-recovery --shares "&lt;SHARE_1_URI&gt;" "&lt;SHARE_3_URI&gt;" --expected-x25519 &lt;PHONE_X25519_HEX&gt;</pre>
+        </div>
+
+        <div class="cmd-card">
+          <div class="cmd-head">
+            <span>4. Stress-Test Cryptography &amp; 3-Way Live TOTP Parity</span>
+            <button class="copy-btn" onclick="copyCmd('cmd4', this)">Copy</button>
+          </div>
+          <pre class="code" id="cmd4"># Run 10k TOTP + 50 .vlt/QR fountain benchmarks + 120s live TOTP parity clock &amp; QR sheet
+.\lavault.exe stress --rounds 50 --totp-iterations 10000 --live-totp-secs 120 --qr-html-out stress_qr.html</pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="crypto">
+      <h2>Cryptographic &amp; Transport Architecture</h2>
+      <p class="section-sub">Shared Rust core compiled directly to Android (<code>libvault_core.so</code>), Windows (<code>vault_core.dll</code>), and Linux CLI via <code>flutter_rust_bridge</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Layer</th>
+              <th>Primitives &amp; Format</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Identity &amp; KDF</td>
+              <td><code>Argon2id (RFC 9106)</code> + <code>HKDF-SHA256</code> + OS Keystore</td>
+              <td>Derives domain-separated X25519, Ed25519, and SQLite encryption subkeys; <code>zeroize</code> on lock.</td>
+            </tr>
+            <tr>
+              <td>Vault + TOTP DB</td>
+              <td><code>SQLite</code> + <code>XChaCha20-Poly1305</code> + <code>RFC 4226/6238</code></td>
+              <td>Stores credentials + encrypted <code>vault_meta:master_seed</code> and computes 6/7/8-digit TOTP codes.</td>
+            </tr>
+            <tr>
+              <td><code>.vlt</code> Container</td>
+              <td><code>LAVAULT1</code> CBOR header + <code>Ed25519</code> + <code>64 KB STREAM</code></td>
+              <td>Supports 1-of-N direct slots (<code>AES-256-KW</code> / <code>XChaCha20</code>) and K-of-N Shamir quorum slots.</td>
+            </tr>
+            <tr>
+              <td>Triple Recovery</td>
+              <td><code>BIP-0039</code> (24 words) + Argon2id <code>.rkf</code> + <code>GF(256) 0x11B</code></td>
+              <td>Paper mnemonic, password-sealed keyfile, and Ed25519-signed Guardian QR share URIs.</td>
+            </tr>
+            <tr>
+              <td>Local Transports</td>
+              <td>1-Tap LAN E2EE + <code>mDNS</code> + <code>TLS 1.3</code> + <code>BLE</code> + <code>bc-ur</code></td>
+              <td>E2EE DEK unwrapping with ephemeral X25519 session keys &mdash; plaintext files never cross the network.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      LaVault &mdash; Zero-Cloud Authenticator, Vault &amp; Unlocker &bull;
+      <a href="https://github.com/lauyeehow1986-hub/LAVault">GitHub</a> &bull;
+      <a href="https://github.com/lauyeehow1986-hub/LAVault/releases">Releases</a>
+    </div>
+  </footer>
+
+  <div id="lightbox" class="lightbox" onclick="this.classList.remove('open')">
+    <img id="lightbox-img" src="" alt="Zoomed Screenshot" />
+  </div>
+
+  <script>
+    function showTab(name, btn) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.add('active');
+      btn.classList.add('active');
+    }
+    function zoom(img) {
+      document.getElementById('lightbox-img').src = img.src;
+      document.getElementById('lightbox').classList.add('open');
+    }
+    function copyCmd(id, btn) {
+      const txt = document.getElementById(id).textContent;
+      navigator.clipboard.writeText(txt).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1400);
+      });
+    }
+  </script>
+</body>
+</html>

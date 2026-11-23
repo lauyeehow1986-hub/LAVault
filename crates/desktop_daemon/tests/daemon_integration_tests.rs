@@ -501,3 +501,44 @@ async fn lan_wifi_unlock_server_handles_http11_chunked_transfer_encoding() {
     let decrypted = vault_core::vlt::decrypt_bytes_with_dek(&vlt, &outcome.dek).unwrap();
     assert_eq!(decrypted, plaintext);
 }
+
+#[test]
+fn cli_parses_verify_recovery_multi_arg_shares() {
+    use clap::Parser;
+
+    let repeated = Cli::try_parse_from([
+        "lavault",
+        "verify-recovery",
+        "--shares",
+        "u1",
+        "--shares",
+        "u2",
+    ])
+    .expect("parse repeated --shares");
+    match repeated.command {
+        Commands::VerifyRecovery { shares, .. } => assert_eq!(shares, vec!["u1", "u2"]),
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let space_sep = Cli::try_parse_from([
+        "lavault",
+        "verify-recovery",
+        "--shares",
+        "u1",
+        "u2",
+        "--expected-x25519",
+        "aa",
+    ])
+    .expect("parse multi-arg --shares");
+    match space_sep.command {
+        Commands::VerifyRecovery {
+            shares,
+            expected_x25519,
+            ..
+        } => {
+            assert_eq!(shares, vec!["u1", "u2"]);
+            assert_eq!(expected_x25519.as_deref(), Some("aa"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}

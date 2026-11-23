@@ -142,7 +142,7 @@ pub enum Commands {
         rkf_hex: Option<String>,
         #[arg(long)]
         rkf_pass: Option<String>,
-        #[arg(long)]
+        #[arg(long, num_args = 1..)]
         shares: Vec<String>,
         #[arg(long)]
         expected_x25519: Option<String>,

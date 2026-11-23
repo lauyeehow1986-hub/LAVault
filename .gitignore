@@ -18,3 +18,6 @@ app_flutter/pubspec.lock
 *.db-wal
 *.db-shm
 .env
+unlock_qr.html
+stress_qr.html
+phone_test_*.html
